@@ -4,7 +4,7 @@ import numpy as np
 import netCDF4 as nc
 import scipy.interpolate as sipl
 #import scipy.integrate as sint
-import apcemm_scripts_modded as aps
+import apcemm_scripts as aps
 import importlib
 import os
 from shutil import copyfile
