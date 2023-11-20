@@ -15,46 +15,47 @@ def run_single(dirname, sw_input, lw_input, cld_input, sw_bin, lw_bin,
     # Go to the directory containing the data. Easiest way to handle the fact that the SW code reads from
     # INPUT_RRTM regardless of what file is specified as input
     start_dir = os.getcwd()
-    os.chdir(dirname)
-    if verbose:
-        print(lw_bash)
-    process = subprocess.Popen(lw_bash, stdin=subprocess.PIPE, stdout=subprocess.PIPE, 
-                               stderr=subprocess.PIPE, shell=True)
-    output, error = process.communicate()
-    if verbose:
-        print(output.decode())
-        print(error.decode())
-    os.rename('OUTPUT-RRTM_lw_apcemm',lw_output_short)
-
-    if os.path.isfile('INPUT_RRTM'):
-        os.remove('INPUT_RRTM')
-    if os.path.isfile('IN_CLD_RRTM'):
-        os.remove('IN_CLD_RRTM')
-
-    os.symlink(sw_input,'INPUT_RRTM')
-    os.symlink(cld_input,'IN_CLD_RRTM')
-    if verbose:
-        print(sw_bash)
-    # Make sure the symlink is deleted even if the process fails
     try:
-        process = subprocess.Popen(sw_bash, stdin=subprocess.PIPE, stdout=subprocess.PIPE, 
+        os.chdir(dirname)
+        if verbose:
+            print(lw_bash)
+        process = subprocess.Popen(lw_bash, stdin=subprocess.PIPE, stdout=subprocess.PIPE, 
                                    stderr=subprocess.PIPE, shell=True)
         output, error = process.communicate()
         if verbose:
             print(output.decode())
             print(error.decode())
+        os.rename('OUTPUT-RRTM_lw_apcemm',lw_output_short)
+
+        if os.path.isfile('INPUT_RRTM'):
+            os.remove('INPUT_RRTM')
+        if os.path.isfile('IN_CLD_RRTM'):
+            os.remove('IN_CLD_RRTM')
+
+        os.symlink(sw_input,'INPUT_RRTM')
+        os.symlink(cld_input,'IN_CLD_RRTM')
+        if verbose:
+            print(sw_bash)
+        # Make sure the symlink is deleted even if the process fails
+        try:
+            process = subprocess.Popen(sw_bash, stdin=subprocess.PIPE, stdout=subprocess.PIPE, 
+                                       stderr=subprocess.PIPE, shell=True)
+            output, error = process.communicate()
+            if verbose:
+                print(output.decode())
+                print(error.decode())
+        finally:
+            os.unlink('INPUT_RRTM')
+            os.unlink('IN_CLD_RRTM')
+        os.rename('OUTPUT_RRTM',sw_output_short)
+        LW_output_path = os.path.join(dirname,lw_output_short)
+        SW_output_path = os.path.join(dirname,sw_output_short)
+
+        for f in ['tape6','TAPE7']:
+            if os.path.isfile(f):
+                os.remove(f)
     finally:
-        os.unlink('INPUT_RRTM')
-        os.unlink('IN_CLD_RRTM')
-    os.rename('OUTPUT_RRTM',sw_output_short)
-    LW_output_path = os.path.join(dirname,lw_output_short)
-    SW_output_path = os.path.join(dirname,sw_output_short)
-
-    for f in ['tape6','TAPE7']:
-        if os.path.isfile(f):
-            os.remove(f)
-
-    os.chdir(start_dir)
+        os.chdir(start_dir)
     return LW_output_path, SW_output_path
 
 def run_directory(dirname, sw_bin=None, lw_bin=None, verbose=False):

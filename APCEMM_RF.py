@@ -141,7 +141,9 @@ def APCEMM2RRTM_V2( apcemm_data_file,z_flight,
                     flight_datetime, number2sum, approach,
                     altitude_edges, fn_z_to_p,
                     temperature, relative_humidity,
-                    ref_dir, min_icemass=1.0e-5, verbose=False ):
+                    ref_dir, min_icemass=1.0e-5, verbose=False,
+                    emissivity=None,albnirdf=None,albnirdr=None,
+                    albvisdf=None,albvisdr=None,sza=None):
     # apcemm_data_file                Location of input ts_aerosol_etc file
     # z_flight                        Altitude at which the contrail is initiated (m)
     # flight_datetime                 Date of the flight (datetime object)
@@ -156,6 +158,22 @@ def APCEMM2RRTM_V2( apcemm_data_file,z_flight,
     # min_icemass                     Minimum ice mass in kg/m for processing [default: 1.0e-5 kg/m]
     # verbose                         Print output during processing [default: False]
  
+    if emissivity is None:
+        emissivity_val = 0.1
+    else:
+        emissivity_val = emissivity
+
+    if albnirdf is None:
+        albnirdf = 0.30
+    if albnirdr is None:
+        albnirdr = 0.30
+    if albvisdf is None:
+        albvisdf = 0.30
+    if albvisdr is None:
+        albvisdr = 0.30
+    if sza is None:
+        sza = 30.0
+
     # First: define a standard vertical grid onto which everything else will be mapped
     # This is currently assumed to match the vertical grid used by the met data
     altitude = (altitude_edges[1:] + altitude_edges[:-1])/2.0
@@ -255,12 +273,6 @@ def APCEMM2RRTM_V2( apcemm_data_file,z_flight,
     Net_RF = np.zeros( ncol )
    
     # Define data which will be needed by RRTM
-    emissivity_val = 0.1
-    albnirdf = 0.30
-    albnirdr = 0.30
-    albvisdf = 0.30
-    albvisdr = 0.30
-    sza = 30.0
     #julian_day = 1721424.5 + cur_datetime.toordinal()
     # RRTM only wants the day of the year (1-366)
     julian_day = cur_datetime.timetuple().tm_yday
@@ -312,85 +324,7 @@ def APCEMM2RRTM_V2( apcemm_data_file,z_flight,
                                                              IWC_rrtm, reff_rrtm, cldfr_rrtm,
                                                              cliqwp_rrtm, cicewp_rrtm )
         
-        #ICE_RADIUS_ERROR = 0
-
-        ## Run LW (clear)
-        #bashCommand = '(echo "' + file_lw_out_clr + '"; echo "' + file_cld_out_clr + '"; echo "' + \
-        #              '_lw_clr' + '"; echo "' + apcemm_folder_rrtm + '"; echo "2") | ' + \
-        #              rrtm_lw_binary_path 
-        #process = subprocess.Popen(bashCommand, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-        #output, error = process.communicate()
-        #if("ICE" in error.decode().upper()):
-        #    ICE_RADIUS_ERROR = 1
-        ## Run LW (cloudy)
-        #bashCommand = '(echo "' + file_lw_out_cld + '"; echo "' + file_cld_out_cld + '"; echo "' + \
-        #              '_lw_cld' + '"; echo "' + apcemm_folder_rrtm + '"; echo "2") | ' + \
-        #              rrtm_lw_binary_path
-        #process = subprocess.Popen(bashCommand, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-        #output, error = process.communicate()
-        #if("ICE" in error.decode().upper()):
-        #    ICE_RADIUS_ERROR = 1
-
-        ## Copy RRTM executables into the directory
-        #copyfile(rrtm_lw_binary_path, os.path.join(apcemm_folder_rrtm, "rrtmg_lw_wcomments"))
-        #copyfile(rrtm_sw_binary_path, os.path.join(apcemm_folder_rrtm, "rrtmg_sw_wcomments"))
-        #os.chmod(os.path.join(apcemm_folder_rrtm, "rrtmg_lw_wcomments"), stat.S_IRWXU)
-        #os.chmod(os.path.join(apcemm_folder_rrtm, "rrtmg_sw_wcomments"), stat.S_IRWXU)
-
-        ## Run SW (clear)
-        #os.rename( file_sw_out_clr,  os.path.join(apcemm_folder_rrtm, 'INPUT_RRTM'  ))
-        #os.rename( file_cld_out_clr, os.path.join(apcemm_folder_rrtm, 'IN_CLD_RRTM' ))
-        #cwd = os.getcwd()
-        #os.chdir( apcemm_folder_rrtm )
-        #bashCommand = './rrtmg_sw_wcomments'
-        #process = subprocess.Popen(bashCommand.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        #output, error = process.communicate()
-        #if("ICE" in error.decode().upper()):
-        #    ICE_RADIUS_ERROR = 1
-        #os.rename( 'OUTPUT_RRTM', 'OUTPUT-RRTM_sw_clr' )
-        #os.chdir( cwd )
-        #os.rename( os.path.join(apcemm_folder_rrtm, 'INPUT_RRTM'),  file_sw_out_clr )
-        #os.rename( os.path.join(apcemm_folder_rrtm, 'IN_CLD_RRTM'), file_cld_out_clr )
-        #
-        ## Run SW (cloud)
-        #os.rename( file_sw_out_cld,  os.path.join(apcemm_folder_rrtm, 'INPUT_RRTM'  )) 
-        #os.rename( file_cld_out_cld, os.path.join(apcemm_folder_rrtm, 'IN_CLD_RRTM' ))
-        #os.chdir( apcemm_folder_rrtm )
-        #bashCommand = './rrtmg_sw_wcomments'
-        #process = subprocess.Popen(bashCommand.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        #output, error = process.communicate()
-        #if("ICE" in error.decode().upper()):
-        #    ICE_RADIUS_ERROR = 1
-        #os.rename( 'OUTPUT_RRTM', 'OUTPUT-RRTM_sw_cld' )
-        #os.chdir( cwd )
-        #os.rename( os.path.join(apcemm_folder_rrtm, 'INPUT_RRTM'),  file_sw_out_cld )
-        #os.rename( os.path.join(apcemm_folder_rrtm, 'IN_CLD_RRTM'), file_cld_out_cld )
-        #
-        ## Read in outputs, calculate RF, and store
-        #if(ICE_RADIUS_ERROR):
-        #    print("RRTM Ice radius error found, setting all RF values to 0 for this column")
-        #    Net_RFi = LW_RFi = SW_RFi = 0
-        #else:
-        #    Net_RFi, LW_RFi, SW_RFi = readRRTMOutput( apcemm_folder_rrtm, pressure_edges_rrtm, \
-        #                                            p_tropopause=tropopause )
-        #Net_RF[icol] = Net_RFi
-        #LW_RF[icol] = LW_RFi
-        #SW_RF[icol] = SW_RFi
-        #print(f"icol: {icol}, LW_RFi: {LW_RFi}, SW_RFi: {SW_RFi}, Net_RFi: {Net_RFi}")
-        #
-        #if np.isnan( Net_RFi ):
-        #    print( 'Careful... NaN in Net RF value' )
-        #    hello
-        #    # SW_RFi = 0
-        #if np.isnan( LW_RFi ):
-        #    print( 'Careful... NaN in LW RF value' )
-        #    hello
-        #    # SW_RFi = 0
-        #if np.isnan( SW_RFi ):
-        #    print( 'Careful... NaN in SW RF value' )
-        #    hello
-        #    # SW_RFi = 0
-    return apcemm_folder_rrtm, dx_sum
+    return ncol, dx_sum
     
     #return np.dot(Net_RF, width_sum), np.dot(LW_RF, width_sum), np.dot(SW_RF, width_sum), time #, sza, emissivity, cldfr, cliqwp, cicewp
 
@@ -1090,8 +1024,131 @@ def monotonic(L):
 #z_flight = 10800.0
 #main_function(ts_aerosol_folder, z_flight, apcemm_met_input_file)
 
+def calc_sza(lat,lon,curr_dt):
+    return 90.0 - pys.get_altitude_fast(lat,lon,curr_dt.replace(tzinfo=dt.timezone.utc))
 
+def APCEMM_RF(ts_dir,z_flight,flight_datetime,lat_vec,lon_vec,
+              sw_bin,lw_bin,ref_dir,
+              altitude_edges,fn_z_to_p,temperature_array,rh_array,
+              dt=None,dt_max=None,
+              number2sum=16,approach=0,
+              min_icemass=1.0e-5,verbose=False):
+             
+    from run_RRTM import run_directory
+    from time import time
+    from datetime import timedelta
 
+    # Step 1: Generate RRTM input files
+    if dt is None:
+        dt = timedelta(minutes=10)
+    if dt_max is None:
+        dt_max = timedelta(hours=24)
+    
+    dt_base = timedelta(hours=0)
+    dt_curr = dt_base
 
+    # Need absolute path to the reference directory, to be safe
+    ref_dir_abs = os.path.abspath(ref_dir)
 
+    dx_data = {}
+    ncol_data = {}
+    i_time = 0
+    # Dummy values - come back to this
+    emissivity = 0.8
+    albnirdf = 0.3
+    albnirdr = 0.3
+    albvisdf = 0.3
+    albvisdr = 0.3
 
+    sza_vec = []
+    while dt_curr < dt_max:
+        total_sec = dt_curr.total_seconds()
+        hh = int(np.floor(total_sec/3600.0))
+        mm = int(np.mod(total_sec/60.0,60))
+        tstamp = '{:02d}{:02d}'.format(hh,mm)
+        f = 'ts_aerosol_case0_{:s}.nc'.format(tstamp)
+        f_APCEMM = os.path.join(ts_dir,f)
+        if not os.path.isfile(f_APCEMM):
+            break
+        # Allow for time-varying or constant T and RH columns
+        if temperature_array.ndim == 2:
+            temperature = temperature_array[i_time,:]
+            rh          = rh_array[i_time,:]
+        else:
+            temperature = temperature_array[:]
+            rh          = rh_array[:]
+        if np.isscalar(lat_vec):
+            lat = lat_vec
+            lon = lon_vec
+        else:
+            lat = lat_vec[i_time]
+            lon = lon_vec[i_time]
+        sza = calc_sza(lat,lon,dt_curr + flight_datetime)
+        sza_vec.append(sza)
+        ncol, dx = APCEMM2RRTM_V2(f_APCEMM,z_flight,
+                                  flight_datetime,number2sum,
+                                  approach,altitude_edges,fn_z_to_p,
+                                  temperature,rh,ref_dir=ref_dir_abs,
+                                  emissivity=emissivity,albnirdf=albnirdf,
+                                  albnirdr=albnirdr,albvisdf=albvisdf,
+                                  albvisdr=albvisdr,sza=sza,
+                                  verbose=False)
+        dx_data[tstamp] = dx
+        ncol_data[tstamp] = ncol
+        dt_curr += dt
+
+    # Step 2: Run RRTM
+    t_start = time()
+    rrtm_dir = os.path.join(ts_dir,'rrtm')
+    run_directory(rrtm_dir,sw_bin=sw_bin,lw_bin=lw_bin,verbose=verbose)
+    t_stop = time()
+    if verbose:
+        print('Completed calculations in {:.1f} seconds'.format(t_stop-t_start))
+
+    # Step 3: Calculate forcing 
+    f_list = [x for x in os.listdir(rrtm_dir) if x.startswith('sw_output_t') and x.endswith('_clr')]
+    rf = {'net': [], 'sw': [], 'lw': []}
+    rf_2D = {'net': [], 'sw': [], 'lw': [], 'width': []}
+    dt_curr = dt_base
+    t = []
+    while dt_curr < dt_max:
+        total_sec = dt_curr.total_seconds()
+        hh = int(np.floor(total_sec/3600.0))
+        mm = int(np.mod(total_sec/60.0,60))
+        tstamp = '{:02d}{:02d}'.format(hh,mm)
+        f_list_mini = [x for x in f_list if 't' + tstamp in x]
+        ncol = len(f_list_mini)
+        if ncol == 0:
+            break
+        net = 0
+        lw = 0
+        sw = 0
+        col_width = dx_data[tstamp]
+        rf_2D['width'].append(col_width)
+        ncol = len(f_list_mini)
+        rf_2D['net'].append(np.zeros(ncol))
+        rf_2D['lw'].append(np.zeros(ncol))
+        rf_2D['sw'].append(np.zeros(ncol))
+        for icol, f in enumerate(f_list_mini):
+            column = int(f.split('_')[3][1:])
+            f_lw_clr = 'lw_output_t{:s}_c{:03d}_clr'.format(tstamp,column)
+            f_sw_clr = 'sw_output_t{:s}_c{:03d}_clr'.format(tstamp,column)
+            f_lw_cld = 'lw_output_t{:s}_c{:03d}_cld'.format(tstamp,column)
+            f_sw_cld = 'sw_output_t{:s}_c{:03d}_cld'.format(tstamp,column)
+            net_col, lw_col, sw_col = readRRTMOutput(rrtm_dir,f_lw_clr,f_sw_clr,f_lw_cld,f_sw_cld)
+            # Store the "full" data
+            rf_2D['net'][-1][icol] = net_col
+            rf_2D['lw'][-1][icol] = lw_col
+            rf_2D['sw'][-1][icol] = sw_col
+            # Aggregate from W/m2 to W/m
+            net += net_col * col_width
+            lw += lw_col * col_width
+            sw += sw_col * col_width
+        rf['net'].append(net)
+        rf['lw'].append(lw)
+        rf['sw'].append(sw)
+        t.append(flight_datetime + dt_curr)
+        dt_curr += dt
+
+    aux_data = {'rf_2D': rf_2D, 'sza': sza_vec}
+    return t, rf, aux_data
