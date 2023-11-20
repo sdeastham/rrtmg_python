@@ -137,16 +137,13 @@ def apcemm_colsums( icemass_vol, icenumber_vol, effradius, X, approach=0, number
     return icemass_vol_sum, icenumber_vol_sum, effradius_sum, X_sum, width_sum
 
 # Calculate RF for an APCEMM file
-def APCEMM2RRTM_V2( apcemm_data_file,
-                    z_flight, flight_latitude, flight_longitude,
+def APCEMM2RRTM_V2( apcemm_data_file,z_flight,
                     flight_datetime, number2sum, approach,
                     altitude_edges, fn_z_to_p,
                     temperature, relative_humidity,
                     ref_dir, min_icemass=1.0e-5, verbose=False ):
     # apcemm_data_file                Location of input ts_aerosol_etc file
     # z_flight                        Altitude at which the contrail is initiated (m)
-    # flight_latitude                 Latitude of the flight (deg N)
-    # flight_longitude                Longitude of the flight (deg E)
     # flight_datetime                 Date of the flight (datetime object)
     # number2sum                      Parameter controlling how APCEMM columns are collapsed (see approach)
     # approach                        0: Sum together number2sum of columns
