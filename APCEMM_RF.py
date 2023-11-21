@@ -1055,7 +1055,8 @@ def APCEMM_RF(ts_dir,z_flight,flight_datetime,lat_vec,lon_vec,
               altitude_edges,fn_z_to_p,temperature_array,rh_array,
               dt=None,dt_max=None,
               number2sum=16,approach=0,
-              min_icemass=1.0e-5,verbose=False):
+              min_icemass=1.0e-5,verbose=False,
+              clean_dir=True):
              
     from run_RRTM import run_directory
     from time import time
@@ -1083,6 +1084,9 @@ def APCEMM_RF(ts_dir,z_flight,flight_datetime,lat_vec,lon_vec,
     albvisdf = 0.3
     albvisdr = 0.3
 
+    if clean_dir:
+        clean_rrtm_dir(os.path.join(ts_dir,'rrtm'))
+    
     sza_vec = []
     while dt_curr < dt_max:
         total_sec = dt_curr.total_seconds()
@@ -1175,3 +1179,17 @@ def APCEMM_RF(ts_dir,z_flight,flight_datetime,lat_vec,lon_vec,
 
     aux_data = {'rf_2D': rf_2D, 'sza': sza_vec}
     return t, rf, aux_data
+
+def clean_rrtm_dir(dirpath,clean_input=True,clean_output=True):
+    # Cleans an RRTM directory if extant
+    if not os.path.isdir(dirpath):
+        return
+    if clean_input:
+        f_list = [x for x in os.listdir(dirpath) if '_input_' in x]
+        for f in f_list:
+            os.remove(os.path.join(dirpath,f))
+    if clean_input:
+        f_list = [x for x in os.listdir(dirpath) if '_output_' in x]
+        for f in f_list:
+            os.remove(os.path.join(dirpath,f))
+    return
