@@ -12,6 +12,9 @@ def run_single(dirname, sw_input, lw_input, cld_input, sw_bin, lw_bin,
     sw_bash = '( echo {:s}; echo {:s}; echo "_sw_apcemm"; echo "./"; echo 2 ) | {:s}'.format(sw_input,cld_input,sw_bin)
     lw_bash = '( echo {:s}; echo {:s}; echo "_lw_apcemm"; echo "./"; echo 2 ) | {:s}'.format(lw_input,cld_input,lw_bin)
     
+    LW_output_path = os.path.join(dirname,lw_output_short)
+    SW_output_path = os.path.join(dirname,sw_output_short)
+    
     # Go to the directory containing the data. Easiest way to handle the fact that the SW code reads from
     # INPUT_RRTM regardless of what file is specified as input
     start_dir = os.getcwd()
@@ -48,8 +51,6 @@ def run_single(dirname, sw_input, lw_input, cld_input, sw_bin, lw_bin,
             os.unlink('INPUT_RRTM')
             os.unlink('IN_CLD_RRTM')
         os.rename('OUTPUT_RRTM',sw_output_short)
-        LW_output_path = os.path.join(dirname,lw_output_short)
-        SW_output_path = os.path.join(dirname,sw_output_short)
 
         for f in ['tape6','TAPE7']:
             if os.path.isfile(f):
@@ -82,7 +83,8 @@ def run_directory(dirname, sw_bin=None, lw_bin=None, verbose=False):
             lw_in  = 'lw_input_{:s}_{:s}_{:s}'.format(tstamp,column,cld_case)
             cld_in = 'cld_input_{:s}_{:s}_{:s}'.format(tstamp,column,cld_case)
             LW_out, SW_out = run_single(dirname,sw_in,lw_in,cld_in,
-                                        sw_bin,lw_bin,sw_out,lw_out,verbose=verbose)
+                                        sw_bin,lw_bin,sw_out,lw_out,
+                                        verbose=verbose)
     return len(all_sw_input)
 
 if __name__ == '__main__':

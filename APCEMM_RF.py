@@ -212,7 +212,7 @@ def APCEMM2RRTM_V2( apcemm_data_file,z_flight,
     # cldfr                           Cloud fraction (0-1, unitless)
     # clwp                            Cloud liquid water path (g/m2)
     # ciwp                            Cloud ice water path (g/m2)
- 
+
     # First: define a standard vertical grid onto which everything else will be mapped
     # This is currently assumed to match the vertical grid used by the met data
     altitude = (altitude_edges[1:] + altitude_edges[:-1])/2.0
@@ -239,7 +239,7 @@ def APCEMM2RRTM_V2( apcemm_data_file,z_flight,
         ciwp = np.zeros(n_lev_met)
     if cldfr is None:
         cldfr = np.zeros(n_lev_met)
-
+    
     # Altitude in meters, pressure in Pa
     # Get the associated pressures and pressure edges (ISA)
     pressure_edges = fn_z_to_p(altitude_edges)
@@ -284,10 +284,11 @@ def APCEMM2RRTM_V2( apcemm_data_file,z_flight,
     
     # Redefine the sizes based on the collapsed data
     nrow, ncol = np.shape( icenumber_vol_sum )
-    areaCell = (Y[2] - Y[1])*(X_sum[2] - X_sum[1])
+    areaCell = (Y[2] - Y[1])*width_sum[0]
     
     # For later usage
-    dx_sum = X_sum[2] - X_sum[1]
+    #dx_sum = X_sum[2] - X_sum[1]
+    dx_sum = width_sum[0]
     
     # Storage for RF values
     LW_RF = np.zeros( ncol )
