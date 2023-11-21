@@ -136,6 +136,51 @@ def apcemm_colsums( icemass_vol, icenumber_vol, effradius, X, approach=0, number
     
     return icemass_vol_sum, icenumber_vol_sum, effradius_sum, X_sum, width_sum
 
+def calc_cloud_paths_era5(cldfr, ql, qi, qr, qs, qv, phi, p_atm, T_atm):
+    # Calculate cloud liquid and ice water paths given ERA5 input data
+    # ERA5 variable names given in square brackets
+    # cldfr   3D cloud fraction (0 to 1) [cc]
+    # ql      Specific cloud liquid water content (kg/kg) [clwc]
+    # qi      Specific cloud ice water content (kg/kg) [ciwc]
+    # qr      Specific rain water content (kg/kg) [crwc]
+    # qs      Specific snow water content (kg/kg) [cswc]
+    # qv      Specific humidity (kg/kg) [q]
+    # phi     Geopotential height (m2/s2) [z]
+    # T_atm   Temperature (K) [t]
+    # p_atm   Pressure at level centers (Pa) [level]
+    
+    rhoice = 0.9167 # g/cm3
+    rholiq = 1.0000 # g/cm3
+    rei_def = 24.8 # microns
+    rel_def = 14.2 # microns
+    
+    Rd = 287.0597 # gas constant for dry air [J/kg/K]
+    Rv = 461.5250 # gas constant for water vapor [J/kg/K]
+    eps_star = Rv/Rd - 1
+
+    g0 = 9.80665 # standard gravity, m/s^2
+    Re = 6.3781e6 # average Earth radius, m
+    
+    height = phi * Re / (g0 * Re - phi) # m
+    dz = np.diff(height)
+    dz = np.append(dz, (dz[-1] - dz[-2] )/ (height[-2] - height[-3]) * (height[-1] - height[-2]) + dz[-1])
+
+    Tv = T_atm*(1 + eps_star*qv - ql - qi - qr - qs)
+    rho_dry = p_atm/Rd/Tv
+    rho_moist = rho_dry/(1 - qv - ql - qi - qr - qs)
+
+    cliqwp = ql * rho_moist * dz * 1e3 # g/m2
+    cicewp = qi * rho_moist * dz * 1e3 # g/m2
+    return cliqwp, cicewp
+
+def calc_cloud_paths_merra2(cldfr, taucli, tauclw, cicewp, cliqwp):
+    # cldfr   3D cloud fraction (0 to 1) [CLOUD]
+    # taucli  Ice cloud optical depth (unitless) [TAUCLI]
+    # tauclw  Water cloud optical depth (unitless) [TAUCLW]
+    cicewp = 0.667*taucli*rhoice*rei_def
+    cliqwp = 0.667*tauclw*rholiq*rel_def
+    return cliqwp, cicewp
+
 # Calculate RF for an APCEMM file
 def APCEMM2RRTM_V2( apcemm_data_file,z_flight,
                     flight_datetime, number2sum, approach,
@@ -143,7 +188,8 @@ def APCEMM2RRTM_V2( apcemm_data_file,z_flight,
                     temperature, relative_humidity,
                     ref_dir, min_icemass=1.0e-5, verbose=False,
                     emissivity=None,albnirdf=None,albnirdr=None,
-                    albvisdf=None,albvisdr=None,sza=None):
+                    albvisdf=None,albvisdr=None,sza=None,
+                    cldfr=None,clwp=None,ciwp=None):
     # apcemm_data_file                Location of input ts_aerosol_etc file
     # z_flight                        Altitude at which the contrail is initiated (m)
     # flight_datetime                 Date of the flight (datetime object)
@@ -157,12 +203,26 @@ def APCEMM2RRTM_V2( apcemm_data_file,z_flight,
     # ref_dir                         Directory containing template RRTM input files
     # min_icemass                     Minimum ice mass in kg/m for processing [default: 1.0e-5 kg/m]
     # verbose                         Print output during processing [default: False]
+    # emissivity                      Surface longwave emissivity (0-1)
+    # albnirdf                        Surface albedo, near-IR diffuse (0-1)
+    # albnirdr                        Surface albedo, near-IR direct (0-1)
+    # albvisdf                        Surface albedo, visible diffuse (0-1)
+    # albvisdr                        Surface albedo, visible direct (0-1)
+    # sza                             Solar zenith angle (degrees)
+    # cldfr                           Cloud fraction (0-1, unitless)
+    # clwp                            Cloud liquid water path (g/m2)
+    # ciwp                            Cloud ice water path (g/m2)
  
+    # First: define a standard vertical grid onto which everything else will be mapped
+    # This is currently assumed to match the vertical grid used by the met data
+    altitude = (altitude_edges[1:] + altitude_edges[:-1])/2.0
+    n_lev_met = altitude.size
+
+    # Now, set default values
     if emissivity is None:
         emissivity_val = 0.1
     else:
         emissivity_val = emissivity
-
     if albnirdf is None:
         albnirdf = 0.30
     if albnirdr is None:
@@ -173,55 +233,17 @@ def APCEMM2RRTM_V2( apcemm_data_file,z_flight,
         albvisdr = 0.30
     if sza is None:
         sza = 30.0
-
-    # First: define a standard vertical grid onto which everything else will be mapped
-    # This is currently assumed to match the vertical grid used by the met data
-    altitude = (altitude_edges[1:] + altitude_edges[:-1])/2.0
-    n_lev_met = altitude.size
+    if clwp is None:
+        clwp = np.zeros(n_lev_met)
+    if ciwp is None:
+        ciwp = np.zeros(n_lev_met)
+    if cldfr is None:
+        cldfr = np.zeros(n_lev_met)
 
     # Altitude in meters, pressure in Pa
     # Get the associated pressures and pressure edges (ISA)
     pressure_edges = fn_z_to_p(altitude_edges)
     pressure       = fn_z_to_p(altitude)
-     
-    rhoice = 0.9167 # g/cm3
-    rholiq = 1.0000 # g/cm3
-    rei_def = 24.8 # microns
-    rel_def = 14.2 # microns
-
-    Rd = 287.0597 # gas constant for dry air [J/kg/K]
-    Rv = 461.5250 # gas constant for water vapor [J/kg/K]
-    eps_star = Rv/Rd - 1
-
-    g0 = 9.80665 # standard gravity, m/s^2
-    Re = 6.3781e6 # average Earth radius, m
-
-    # Convert meteorological inputs
-    cldfr = np.zeros(n_lev_met)  # 3D cloud fraction (0 to 1) [cc]
-    ql    = np.zeros(n_lev_met)  # Specific cloud liquid water content (kg/kg) [clwc]
-    qi    = np.zeros(n_lev_met)  # Specific cloud ice water content (kg/kg) [ciwc]
-    qr    = np.zeros(n_lev_met)  # Specific rain water content (kg/kg) [crwc]
-    qs    = np.zeros(n_lev_met)  # Specific snow water content (kg/kg) [cswc]
-    qv    = np.zeros(n_lev_met)  # Specific humidity (kg/kg) [q]
-    #T_atm = np.zeros(n_lev_met)  # Temperature (K) [t]
-    #p_atm = np.zeros(n_lev_met)  # Pressure at level centers (Pa) [level]
-    #phi =   np.zeros(n_lev_met)  # Geopotential height (m2/s2) [z]
-
-    #height = phi * Re / (g0 * Re - phi) # m
-    #dz = np.diff(height)
-    #dz = np.append(dz, (dz[-1] - dz[-2] )/ (height[-2] - height[-3]) * (height[-1] - height[-2]) + dz[-1])
-
-    dz = np.diff(altitude_edges)
-    p_atm = pressure
-    T_atm = temperature
-
-    Tv = T_atm*(1 + eps_star*qv - ql - qi - qr - qs)
-    rho_dry = p_atm/Rd/Tv
-    rho_moist = rho_dry/(1 - qv - ql - qi - qr - qs)
-
-    # Convert meteorological data into water paths
-    cliqwp = ql * rho_moist * dz * 1e3 # g/m2
-    cicewp = qi * rho_moist * dz * 1e3 # g/m2
 
     # Retrieve data from the APCEMM simulation
     apcemm_folder = os.path.dirname( apcemm_data_file )
@@ -297,7 +319,7 @@ def APCEMM2RRTM_V2( apcemm_data_file,z_flight,
         pressure_edges_rrtm, IWC_rrtm, reff_rrtm, cldfr_rrtm, cliqwp_rrtm, cicewp_rrtm = \
                 convertConditions( icemass_vol_col, icenumber_vol_col, effradius_col, \
                                    altitude_apcemm, altitude_edges, fn_z_to_p, cldfr, \
-                                   cliqwp, cicewp )
+                                   clwp, ciwp )
         if ( not monotonic( pressure_edges_rrtm ) ):
             for idx, val in enumerate( pressure_edges_rrtm[:-1] ):
                 print( val, IWC_rrtm[idx], reff_rrtm[idx] )
