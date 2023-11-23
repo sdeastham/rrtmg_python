@@ -258,15 +258,23 @@ def APCEMM2RRTM_V2( apcemm_data_file,z_flight,
     if not os.path.exists(apcemm_folder_rrtm):
         os.makedirs(apcemm_folder_rrtm)
 
-    # Get apcemm data
-    nc_apcemm = nc.Dataset( apcemm_data_file, 'r' )
+    # Time is extracted from the file _name_
     hh, mm = aps.getAPCEMM_time( apcemm_data_file )
     time = int(hh) + int(mm)/60
     if verbose:
          print( '    %s:%s' %( hh, mm ) )
-    X, Y, areaCell = aps.getAPCEMM_grid( nc_apcemm )
-    dY = Y[2] - Y[1]
-    icenumber_vol, icemass_vol, effradius = aps.getAPCEMM_2Ddist( nc_apcemm )
+    
+    # Get apcemm data from netCDF contents
+    with nc.Dataset( apcemm_data_file, 'r' ) as nc_apcemm:
+        X, Y, areaCell = aps.getAPCEMM_grid( nc_apcemm )
+        dY = Y[2] - Y[1]
+
+        # For later use
+        y_vec = Y.copy()
+        yb_vec = np.linspace(y_vec[0] - (dY/2.0),y_vec[-1] + (dY/2.0),Y.size)
+    
+        icenumber_vol, icemass_vol, effradius = aps.getAPCEMM_2Ddist( nc_apcemm )
+    
     icenumber_vol *= 1.0E+06
     icemass_vol *= 1.0E+06 * 1.0E+03 # Converts from kg/cm3 to g/m^3
     
@@ -296,6 +304,10 @@ def APCEMM2RRTM_V2( apcemm_data_file,z_flight,
     # For later usage
     #dx_sum = X_sum[2] - X_sum[1]
     dx_sum = width_sum[0]
+    
+    # For later use
+    x_vec = X_sum.copy()
+    xb_vec = np.linspace(x_vec[0] - (dx_sum/2.0),x_vec[-1] + (dx_sum/2.0),Y.size)
     
     # Storage for RF values
     LW_RF = np.zeros( ncol )
@@ -354,8 +366,8 @@ def APCEMM2RRTM_V2( apcemm_data_file,z_flight,
         file_cld_out_clr, file_cld_out_cld = edit_cld_input( file_cld_in, file_cld_out,
                                                              IWC_rrtm, reff_rrtm, cldfr_rrtm,
                                                              cliqwp_rrtm, cicewp_rrtm )
-        
-    return ncol, dx_sum
+    
+    return ncol, dx_sum, x_vec, xb_vec, y_vec, yb_vec
     
     #return np.dot(Net_RF, width_sum), np.dot(LW_RF, width_sum), np.dot(SW_RF, width_sum), time #, sza, emissivity, cldfr, cliqwp, cicewp
 
@@ -1116,6 +1128,10 @@ def APCEMM_RF(ts_dir,z_flight,flight_datetime,lat_vec,lon_vec,
         clean_rrtm_dir(os.path.join(ts_dir,'rrtm'))
     
     sza_vec = []
+    x_data = {}
+    xb_data = {}
+    
+    t_start = time()
     while dt_curr < dt_max:
         total_sec = dt_curr.total_seconds()
         hh = int(np.floor(total_sec/3600.0))
@@ -1150,16 +1166,21 @@ def APCEMM_RF(ts_dir,z_flight,flight_datetime,lat_vec,lon_vec,
                                                   verbose=False,use_mca_sw=use_mca_sw,
                                                   use_mca_lw=use_mca_lw)
         dx_data[tstamp] = dx
+        x_data[tstamp] = x
+        xb_data[tstamp] = x_b
         ncol_data[tstamp] = ncol
         dt_curr += dt
-
+    t_stop = time()
+    t_input_gen = t_stop-t_start
+        
     # Step 2: Run RRTM
     t_start = time()
     rrtm_dir = os.path.join(ts_dir,'rrtm')
     run_directory(rrtm_dir,sw_bin=sw_bin,lw_bin=lw_bin,verbose=verbose)
     t_stop = time()
+    t_RRTM = t_stop-t_start
     if verbose:
-        print('Completed calculations in {:.1f} seconds'.format(t_stop-t_start))
+        print('Completed calculations in {:.1f} seconds'.format(t_RRTM))
 
     # Step 3: Calculate forcing 
     f_list = [x for x in os.listdir(rrtm_dir) if x.startswith('sw_output_t') and x.endswith('_clr')]
@@ -1167,6 +1188,7 @@ def APCEMM_RF(ts_dir,z_flight,flight_datetime,lat_vec,lon_vec,
     rf_2D = {'net': [], 'sw': [], 'lw': [], 'width': []}
     dt_curr = dt_base
     t = []
+    t_start = time()
     while dt_curr < dt_max:
         total_sec = dt_curr.total_seconds()
         hh = int(np.floor(total_sec/3600.0))
@@ -1205,8 +1227,11 @@ def APCEMM_RF(ts_dir,z_flight,flight_datetime,lat_vec,lon_vec,
         rf['sw'].append(sw)
         t.append(flight_datetime + dt_curr)
         dt_curr += dt
-
-    aux_data = {'rf_2D': rf_2D, 'sza': sza_vec}
+    t_stop = time()
+    t_postprocess = t_stop - t_start
+        
+    aux_data = {'rf_2D': rf_2D, 'sza': sza_vec, 'x_b': xb_data, 'x': x_data,
+                'timing': {'Input': t_input_gen, 'RRTM': t_RRTM, 'Postprocessing': t_postprocess}}
     return t, rf, aux_data
 
 def clean_rrtm_dir(dirpath,clean_input=True,clean_output=True):
