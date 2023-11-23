@@ -189,7 +189,8 @@ def APCEMM2RRTM_V2( apcemm_data_file,z_flight,
                     ref_dir, min_icemass=1.0e-5, verbose=False,
                     emissivity=None,albnirdf=None,albnirdr=None,
                     albvisdf=None,albvisdr=None,sza=None,
-                    cldfr=None,clwp=None,ciwp=None):
+                    cldfr=None,clwp=None,ciwp=None,
+                    use_mca_lw=True,use_mca_sw=True):
     # apcemm_data_file                Location of input ts_aerosol_etc file
     # z_flight                        Altitude at which the contrail is initiated (m)
     # flight_datetime                 Date of the flight (datetime object)
@@ -212,6 +213,12 @@ def APCEMM2RRTM_V2( apcemm_data_file,z_flight,
     # cldfr                           Cloud fraction (0-1, unitless)
     # clwp                            Cloud liquid water path (g/m2)
     # ciwp                            Cloud ice water path (g/m2)
+    # use_mca_lw                      Use MCA for cloud overlap on LW calculations? (See comment*)
+    # use_mca_sw                      Use MCA for cloud overlap on SW calculations? (See comment*)
+    # * A comment in the LW code mentions that McICA is not recommended for use with the TAMU updates,
+    #   but an email conversation between Akshat Agarwal and TAMU in 2021 indicated that there was no
+    #   physical reason to not implement the changes in McICA. It is not yet clear if the latest
+    #   version of the code includes the TAMU edits in the LW (or SW) McICA codes.
 
     # First: define a standard vertical grid onto which everything else will be mapped
     # This is currently assumed to match the vertical grid used by the met data
@@ -340,9 +347,10 @@ def APCEMM2RRTM_V2( apcemm_data_file,z_flight,
         file_cld_out = os.path.join(apcemm_folder_rrtm,'cld_input_{:s}'.format(file_tag))
         
         file_lw_out_clr, file_lw_out_cld = edit_lw_input( file_lw_in, file_lw_out, pressure, temperature,
-                                                          pressure_edges_rrtm, relative_humidity, emissivity )
-        file_sw_out_clr, file_sw_out_cld = edit_sw_input( file_sw_in, file_sw_out, pressure, temperature, relative_humidity, \
-                                                          pressure_edges_rrtm, emissivity, julian_day, sza, albnirdf, albnirdr, albvisdf, albvisdr )
+                                                          pressure_edges_rrtm, relative_humidity, emissivity, use_mca_lw )
+        file_sw_out_clr, file_sw_out_cld = edit_sw_input( file_sw_in, file_sw_out, pressure, temperature, relative_humidity, 
+                                                          pressure_edges_rrtm, emissivity, julian_day, sza, albnirdf, albnirdr, albvisdf, albvisdr,
+                                                          use_mca_sw)
         file_cld_out_clr, file_cld_out_cld = edit_cld_input( file_cld_in, file_cld_out,
                                                              IWC_rrtm, reff_rrtm, cldfr_rrtm,
                                                              cliqwp_rrtm, cicewp_rrtm )
@@ -574,8 +582,9 @@ def read_SW( filename, maxlevs=1000 ):
     return df_sw
 
 # Edit the LW input file
-def edit_lw_input( file_lw_in, file_lw_out, pressure, temperature, pressure_edges_rrtm, relative_humidity, emissivity ):
-   
+def edit_lw_input( file_lw_in, file_lw_out, pressure, temperature, pressure_edges_rrtm, relative_humidity, emissivity, use_mca ):
+    # use_mca                  use MCA for clouds (True/False)? WARNING: May not be recommended for TAMU LW code
+
     pressure_hPa = pressure * 0.01
     pressure_edges_rrtm_hPa = pressure_edges_rrtm * 0.01
  
@@ -590,7 +599,16 @@ def edit_lw_input( file_lw_in, file_lw_out, pressure, temperature, pressure_edge
     #     print(line)
     f_in.close()
     
-    # Edit record 1.2
+    # Record 1.2
+    iline = 3
+    if use_mca:
+        mca_int = 1
+    else:
+        mca_int = 0
+    ctrl_line = ' HI=0 F4=0 CN=0 AE 0 EM=0 SC=0 FI=0 PL=0 TS=0 AM=1 MG=0 LA=0 OD=0 XS=0   00   00  0 0    0   {:01d}2\n'.format(mca_int)
+    lines[iline] = ctrl_line
+    
+    # Record 1.3
     iline = 4
     emis_line = ''.join( [ '%10.3f' %emissivity[k] for k in range( len( emissivity ) ) ])
     lines[iline] = '%10.3f %1d  %1d'%( temperature[0], 2, 0 ) + emis_line + '\n' 
@@ -671,7 +689,7 @@ def edit_lw_input( file_lw_in, file_lw_out, pressure, temperature, pressure_edge
     return file_lw_out+'_clr', file_lw_out+'_cld'
 
 # Edit the SW input file
-def edit_sw_input( file_sw_in, file_sw_out, pressure, temperature, relative_humidity, pressure_edges_rrtm, emissivity, julian_day, sza, albnirdf, albnirdr, albvisdf, albvisdr ):
+def edit_sw_input( file_sw_in, file_sw_out, pressure, temperature, relative_humidity, pressure_edges_rrtm, emissivity, julian_day, sza, albnirdf, albnirdr, albvisdf, albvisdr, use_mca ):
     # pressure[:]              mid points (Pa?) on which RH and temperature are defined
     # temperature[:]           temperature (K) in each cell
     # relative_humidity[:]     relative humidity (%?) in each cell
@@ -682,6 +700,7 @@ def edit_sw_input( file_sw_in, file_sw_out, pressure, temperature, relative_humi
     # albnirdr                 surface albedo (fraction) for direct, near-IR radiation
     # albvisdf                 surface albedo (fraction) for diffuse, visible radiation
     # albvisdr                 surface albedo (fraction) for direct, visible radiation
+    # use_mca                  use MCA for clouds (True/False)?
  
     pressure_hPa = pressure * 0.01
     pressure_edges_rrtm_hPa = pressure_edges_rrtm * 0.01
@@ -696,6 +715,15 @@ def edit_sw_input( file_sw_in, file_sw_out, pressure, temperature, relative_humi
     # for line in lines:
     #     print(line)
     f_in.close()
+    
+    # Control line - record whether or not to use MCA for cloud overlap
+    iline = 4
+    if use_mca:
+        mca_int = 1
+    else:
+        mca_int = 0
+    ctrl_line = ' HI=1 F4=1 CN=1 AE 0 EM=0 SC=0 FI=0 PL=0 TS=0 AM=1 MG=1 LA=0    1        00   00  1 0    0   {:01d}2   00\n'.format(mca_int)
+    lines[iline] = ctrl_line
     
     # Record 1.2.1
     iline = 5
@@ -1056,7 +1084,7 @@ def APCEMM_RF(ts_dir,z_flight,flight_datetime,lat_vec,lon_vec,
               dt=None,dt_max=None,
               number2sum=16,approach=0,
               min_icemass=1.0e-5,verbose=False,
-              clean_dir=True):
+              clean_dir=True,use_mca_lw=False,use_mca_sw=True):
              
     from run_RRTM import run_directory
     from time import time
@@ -1112,14 +1140,15 @@ def APCEMM_RF(ts_dir,z_flight,flight_datetime,lat_vec,lon_vec,
             lon = lon_vec[i_time]
         sza = calc_sza(lat,lon,dt_curr + flight_datetime)
         sza_vec.append(sza)
-        ncol, dx = APCEMM2RRTM_V2(f_APCEMM,z_flight,
-                                  flight_datetime,number2sum,
-                                  approach,altitude_edges,fn_z_to_p,
-                                  temperature,rh,ref_dir=ref_dir_abs,
-                                  emissivity=emissivity,albnirdf=albnirdf,
-                                  albnirdr=albnirdr,albvisdf=albvisdf,
-                                  albvisdr=albvisdr,sza=sza,
-                                  verbose=False)
+        ncol, dx, x, x_b, y, y_b = APCEMM2RRTM_V2(f_APCEMM,z_flight,
+                                                  flight_datetime,number2sum,
+                                                  approach,altitude_edges,fn_z_to_p,
+                                                  temperature,rh,ref_dir=ref_dir_abs,
+                                                  emissivity=emissivity,albnirdf=albnirdf,
+                                                  albnirdr=albnirdr,albvisdf=albvisdf,
+                                                  albvisdr=albvisdr,sza=sza,
+                                                  verbose=False,use_mca_sw=use_mca_sw,
+                                                  use_mca_lw=use_mca_lw)
         dx_data[tstamp] = dx
         ncol_data[tstamp] = ncol
         dt_curr += dt
