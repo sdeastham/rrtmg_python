@@ -14,26 +14,33 @@ def run_multi(dirname, sw_input_vec, lw_input_vec, cld_input_vec, sw_bin, lw_bin
     lw_out_vec = []
     for sw_input, lw_input, cld_input, sw_out, lw_out in zip(sw_input_vec,lw_input_vec,cld_input_vec,
                                                              sw_output_short_vec,lw_output_short_vec):
-    
-        # Commands to prep for the run
-        sw_prep = 'unlink INPUT_RRTM; unlink IN_CLD_RRTM; ln -s {:s} INPUT_RRTM; ln -s {:s} IN_CLD_RRTM'.format(sw_input, cld_input)
-        lw_prep = 'unlink INPUT_RRTM; unlink IN_CLD_RRTM; ln -s {:s} INPUT_RRTM; ln -s {:s} IN_CLD_RRTM'.format(lw_input, cld_input)
-
-        # Build the bash commands for each run
-        sw_bash = '( echo {:s}; echo {:s}; echo "_sw_apcemm"; echo "./"; echo 2 ) | {:s}'.format(sw_input,cld_input,sw_bin)
-        lw_bash = '( echo {:s}; echo {:s}; echo "_lw_apcemm"; echo "./"; echo 2 ) | {:s}'.format(lw_input,cld_input,lw_bin)
-
-        # Commands to move data after generation
-        lw_move = 'mv OUTPUT-RRTM_lw_apcemm ' + lw_out
-        sw_move = 'mv OUTPUT_RRTM ' + sw_out
+        # Skip cases where no shortwave input is found - this happens if the SZA is too high
+        skip_sw = not os.path.isfile(os.path.join(dirname,sw_input))
         
+        # Commands to prepare input files, run RRTM, and then move the output files
+        lw_prep = 'unlink INPUT_RRTM; unlink IN_CLD_RRTM; ln -s {:s} INPUT_RRTM; ln -s {:s} IN_CLD_RRTM'.format(lw_input, cld_input)
+        lw_bash = '( echo {:s}; echo {:s}; echo "_lw_apcemm"; echo "./"; echo 2 ) | {:s}'.format(lw_input,cld_input,lw_bin)
+        lw_move = 'mv OUTPUT-RRTM_lw_apcemm ' + lw_out
         LW_output_path = os.path.join(dirname,lw_out)
-        SW_output_path = os.path.join(dirname,sw_out)
+        
+        cmd_list_lw = [lw_prep, lw_bash, lw_move]
+        
+        # Commands to prep for the run
+        if skip_sw:
+            sw_prep = 'unlink INPUT_RRTM; unlink IN_CLD_RRTM; ln -s {:s} INPUT_RRTM; ln -s {:s} IN_CLD_RRTM'.format(sw_input, cld_input)
+            sw_bash = '( echo {:s}; echo {:s}; echo "_sw_apcemm"; echo "./"; echo 2 ) | {:s}'.format(sw_input,cld_input,sw_bin)
+            sw_move = 'mv OUTPUT_RRTM ' + sw_out
+            SW_output_path = os.path.join(dirname,sw_out)
+            cmd_list_sw = [sw_prep, sw_bash, sw_move]
+        else:
+            SW_output_path = None
+            cmd_list_sw = []
+        
 
         sw_out_vec.append(SW_output_path)
         lw_out_vec.append(LW_output_path)
 
-        for cmd in [sw_prep, sw_bash, sw_move, lw_prep, lw_bash, lw_move]:
+        for cmd in cmd_list_sw + cmd_list_lw:
             bash_cmd_vec.append(cmd)
 
     bash_cmd = '\n'.join(bash_cmd_vec)
@@ -68,6 +75,8 @@ def run_multi(dirname, sw_input_vec, lw_input_vec, cld_input_vec, sw_bin, lw_bin
         
     finally:
         os.chdir(start_dir)
+        
+    raise ValueError
     return lw_out_vec, sw_out_vec
 
 def run_single(dirname, sw_input, lw_input, cld_input, sw_bin, lw_bin,
@@ -99,22 +108,23 @@ def run_single(dirname, sw_input, lw_input, cld_input, sw_bin, lw_bin,
         if os.path.isfile('IN_CLD_RRTM'):
             os.remove('IN_CLD_RRTM')
 
-        os.symlink(sw_input,'INPUT_RRTM')
-        os.symlink(cld_input,'IN_CLD_RRTM')
-        if verbose:
-            print(sw_bash)
-        # Make sure the symlink is deleted even if the process fails
-        try:
-            process = subprocess.Popen(sw_bash, stdin=subprocess.PIPE, stdout=subprocess.PIPE, 
-                                       stderr=subprocess.PIPE, shell=True)
-            output, error = process.communicate()
+        if os.path.isfile(sw_input):
+            os.symlink(sw_input,'INPUT_RRTM')
+            os.symlink(cld_input,'IN_CLD_RRTM')
             if verbose:
-                print(output.decode())
-                print(error.decode())
-        finally:
-            os.unlink('INPUT_RRTM')
-            os.unlink('IN_CLD_RRTM')
-        os.rename('OUTPUT_RRTM',sw_output_short)
+                print(sw_bash)
+            # Make sure the symlink is deleted even if the process fails
+            try:
+                process = subprocess.Popen(sw_bash, stdin=subprocess.PIPE, stdout=subprocess.PIPE, 
+                                           stderr=subprocess.PIPE, shell=True)
+                output, error = process.communicate()
+                if verbose:
+                    print(output.decode())
+                    print(error.decode())
+            finally:
+                os.unlink('INPUT_RRTM')
+                os.unlink('IN_CLD_RRTM')
+            os.rename('OUTPUT_RRTM',sw_output_short)
 
         for f in ['tape6','TAPE7']:
             if os.path.isfile(f):
@@ -132,9 +142,10 @@ def run_directory(dirname, sw_bin=None, lw_bin=None, verbose=False, use_single=F
         lw_bin = './rrtmg_lw'
 
     # Figure out how many cases we have
-    all_sw_input = [x for x in os.listdir(dirname) if x.startswith('sw_input_t') and not os.path.isdir(x)
+    # Use longwave because shortwave files are not generated when SZA is too high
+    all_lw_input = [x for x in os.listdir(dirname) if x.startswith('lw_input_t') and not os.path.isdir(x)
                                                       and x.endswith('_clr')]
-    print(len(all_sw_input))
+    
     if not use_single:
         sw_out_vec = []
         lw_out_vec = []
@@ -142,8 +153,8 @@ def run_directory(dirname, sw_bin=None, lw_bin=None, verbose=False, use_single=F
         lw_in_vec = []
         cld_in_vec = []
         
-    for sw_clr in all_sw_input:
-        f_split = sw_clr.split('_')
+    for lw_clr in all_lw_input:
+        f_split = lw_clr.split('_')
         tstamp  = f_split[2]
         column  = f_split[3]
         # Run two cases: with and without contrail
@@ -163,12 +174,12 @@ def run_directory(dirname, sw_bin=None, lw_bin=None, verbose=False, use_single=F
                 sw_in_vec.append(sw_in)
                 lw_in_vec.append(lw_in)
                 cld_in_vec.append(cld_in)
-                
+        
     if not use_single:
         run_multi(dirname, sw_in_vec, lw_in_vec, cld_in_vec, sw_bin, lw_bin,
               sw_out_vec,lw_out_vec,verbose=verbose)
         
-    return len(all_sw_input)
+    return len(all_lw_input)
 
 if __name__ == '__main__':
     from time import time

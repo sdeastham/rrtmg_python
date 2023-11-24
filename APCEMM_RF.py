@@ -190,7 +190,7 @@ def APCEMM2RRTM_V2( apcemm_data_file,z_flight,
                     emissivity=None,albnirdf=None,albnirdr=None,
                     albvisdf=None,albvisdr=None,sza=None,
                     cldfr=None,clwp=None,ciwp=None,
-                    use_mca_lw=True,use_mca_sw=True):
+                    use_mca_lw=True,use_mca_sw=True,skip_sw=False):
     # apcemm_data_file                Location of input ts_aerosol_etc file
     # z_flight                        Altitude at which the contrail is initiated (m)
     # flight_datetime                 Date of the flight (datetime object)
@@ -215,6 +215,7 @@ def APCEMM2RRTM_V2( apcemm_data_file,z_flight,
     # ciwp                            Cloud ice water path (g/m2)
     # use_mca_lw                      Use MCA for cloud overlap on LW calculations? (See comment*)
     # use_mca_sw                      Use MCA for cloud overlap on SW calculations? (See comment*)
+    # skip_sw                         Only create LW input files
     # * A comment in the LW code mentions that McICA is not recommended for use with the TAMU updates,
     #   but an email conversation between Akshat Agarwal and TAMU in 2021 indicated that there was no
     #   physical reason to not implement the changes in McICA. It is not yet clear if the latest
@@ -358,14 +359,15 @@ def APCEMM2RRTM_V2( apcemm_data_file,z_flight,
         file_cld_in  = os.path.join(ref_dir,'incld_rrtm_lw_template')
         file_cld_out = os.path.join(apcemm_folder_rrtm,'cld_input_{:s}'.format(file_tag))
         
+        file_cld_out_clr, file_cld_out_cld,any_cloud = edit_cld_input( file_cld_in, file_cld_out,
+                                                                       IWC_rrtm, reff_rrtm, cldfr_rrtm,
+                                                                       cliqwp_rrtm, cicewp_rrtm )
         file_lw_out_clr, file_lw_out_cld = edit_lw_input( file_lw_in, file_lw_out, pressure, temperature,
-                                                          pressure_edges_rrtm, relative_humidity, emissivity, use_mca_lw )
-        file_sw_out_clr, file_sw_out_cld = edit_sw_input( file_sw_in, file_sw_out, pressure, temperature, relative_humidity, 
-                                                          pressure_edges_rrtm, emissivity, julian_day, sza, albnirdf, albnirdr, albvisdf, albvisdr,
-                                                          use_mca_sw)
-        file_cld_out_clr, file_cld_out_cld = edit_cld_input( file_cld_in, file_cld_out,
-                                                             IWC_rrtm, reff_rrtm, cldfr_rrtm,
-                                                             cliqwp_rrtm, cicewp_rrtm )
+                                                          pressure_edges_rrtm, relative_humidity, emissivity, use_mca_lw,any_cloud )
+        if not skip_sw:
+            file_sw_out_clr, file_sw_out_cld = edit_sw_input( file_sw_in, file_sw_out, pressure, temperature, relative_humidity, 
+                                                              pressure_edges_rrtm, emissivity, julian_day, sza, albnirdf, albnirdr,
+                                                              albvisdf, albvisdr,use_mca_sw,any_cloud)
     
     return ncol, dx_sum, x_vec, xb_vec, y_vec, yb_vec
     
@@ -464,17 +466,22 @@ def readRRTMOutput( folderpath, file_lw_clr, file_sw_clr,
     
     # Find values at tropopause
     row_lw_clr = file_lw_clr.loc[ file_lw_clr['PRESSURE'].sub(p_tropopause).abs().idxmin() ]
-    row_sw_clr = file_sw_clr.loc[ file_sw_clr['PRESSURE'].sub(p_tropopause).abs().idxmin() ]
     row_lw_cld = file_lw_cld.loc[ file_lw_cld['PRESSURE'].sub(p_tropopause).abs().idxmin() ]
-    row_sw_cld = file_sw_cld.loc[ file_sw_cld['PRESSURE'].sub(p_tropopause).abs().idxmin() ]
+    
+    skip_sw = file_sw_clr is None
+    if not skip_sw:
+        row_sw_clr = file_sw_clr.loc[ file_sw_clr['PRESSURE'].sub(p_tropopause).abs().idxmin() ]
+        row_sw_cld = file_sw_cld.loc[ file_sw_cld['PRESSURE'].sub(p_tropopause).abs().idxmin() ]
     
     # Calculate cloud radiative effect
     LW_RF = row_lw_clr['NET FLUX'] - row_lw_cld['NET FLUX']
-    if (not isinstance( row_sw_clr['NET FLUX'], numbers.Number )) | \
+    if skip_sw:
+        SW_RF = 0.0
+    elif (not isinstance( row_sw_clr['NET FLUX'], numbers.Number )) | \
        (not isinstance( row_sw_cld['NET FLUX'], numbers.Number )):
-        SW_RF = 0
+        SW_RF = 0.0
     elif (np.isnan( row_sw_cld['NET FLUX'] )) | (np.isnan( row_sw_cld['NET FLUX'] )):
-        SW_RF = 0
+        SW_RF = 0.0
     else:
         SW_RF = row_sw_clr['NET FLUX'] - row_sw_cld['NET FLUX']
     Net_RF = LW_RF - SW_RF
@@ -525,6 +532,10 @@ def read_LW( filename, maxlevs=1000 ):
     return df_lw
 
 def read_SW( filename, maxlevs=1000 ):
+    
+    # Shortwave is not always run..
+    if not os.path.isfile(filename):
+        return None
     
     nlevs = maxlevs
 
@@ -594,8 +605,9 @@ def read_SW( filename, maxlevs=1000 ):
     return df_sw
 
 # Edit the LW input file
-def edit_lw_input( file_lw_in, file_lw_out, pressure, temperature, pressure_edges_rrtm, relative_humidity, emissivity, use_mca ):
+def edit_lw_input( file_lw_in, file_lw_out, pressure, temperature, pressure_edges_rrtm, relative_humidity, emissivity, use_mca, any_cloud ):
     # use_mca                  use MCA for clouds (True/False)? WARNING: May not be recommended for TAMU LW code
+    # any_cloud                are there any cloud layers present in the contrail-free data?
 
     pressure_hPa = pressure * 0.01
     pressure_edges_rrtm_hPa = pressure_edges_rrtm * 0.01
@@ -612,13 +624,21 @@ def edit_lw_input( file_lw_in, file_lw_out, pressure, temperature, pressure_edge
     f_in.close()
     
     # Record 1.2
-    iline = 3
+    iline_ctrl = 3
     if use_mca:
         mca_int = 1
+        cld_int_cloudy = 2
     else:
         mca_int = 0
-    ctrl_line = ' HI=0 F4=0 CN=0 AE 0 EM=0 SC=0 FI=0 PL=0 TS=0 AM=1 MG=0 LA=0 OD=0 XS=0   00   00  0 0    0   {:01d}2\n'.format(mca_int)
-    lines[iline] = ctrl_line
+        cld_int_cloudy = 1
+    
+    if any_cloud:
+        cld_int = cld_int_cloudy
+    else:
+        cld_int = 0
+    # Might need different control lines for the cloudy and clear cases
+    ctrl_line_clr = ' HI=0 F4=0 CN=0 AE 0 EM=0 SC=0 FI=0 PL=0 TS=0 AM=1 MG=0 LA=0 OD=0 XS=0   00   00  0 0    0   {:01d}{:1d}\n'.format(mca_int,cld_int)
+    ctrl_line_cld = ' HI=0 F4=0 CN=0 AE 0 EM=0 SC=0 FI=0 PL=0 TS=0 AM=1 MG=0 LA=0 OD=0 XS=0   00   00  0 0    0   {:01d}{:1d}\n'.format(mca_int,cld_int_cloudy)
     
     # Record 1.3
     iline = 4
@@ -683,6 +703,7 @@ def edit_lw_input( file_lw_in, file_lw_out, pressure, temperature, pressure_edge
 #     lines[iline] = "".join( temp_line )
     
     # Write to clear sky file
+    lines[iline_ctrl] = ctrl_line_clr
     lines_clr = "".join(lines)
     f_out_clr.write(lines_clr)
     f_out_clr.close()
@@ -694,6 +715,7 @@ def edit_lw_input( file_lw_in, file_lw_out, pressure, temperature, pressure_edge
 #     lines[iline] = "".join( temp_line )
     
     # Write to cloudy sky file
+    lines[iline_ctrl] = ctrl_line_cld
     lines_cld = "".join(lines)
     f_out_cld.write(lines_cld)
     f_out_cld.close()
@@ -701,7 +723,7 @@ def edit_lw_input( file_lw_in, file_lw_out, pressure, temperature, pressure_edge
     return file_lw_out+'_clr', file_lw_out+'_cld'
 
 # Edit the SW input file
-def edit_sw_input( file_sw_in, file_sw_out, pressure, temperature, relative_humidity, pressure_edges_rrtm, emissivity, julian_day, sza, albnirdf, albnirdr, albvisdf, albvisdr, use_mca ):
+def edit_sw_input( file_sw_in, file_sw_out, pressure, temperature, relative_humidity, pressure_edges_rrtm, emissivity, julian_day, sza, albnirdf, albnirdr, albvisdf, albvisdr, use_mca, any_cloud ):
     # pressure[:]              mid points (Pa?) on which RH and temperature are defined
     # temperature[:]           temperature (K) in each cell
     # relative_humidity[:]     relative humidity (%?) in each cell
@@ -713,6 +735,7 @@ def edit_sw_input( file_sw_in, file_sw_out, pressure, temperature, relative_humi
     # albvisdf                 surface albedo (fraction) for diffuse, visible radiation
     # albvisdr                 surface albedo (fraction) for direct, visible radiation
     # use_mca                  use MCA for clouds (True/False)?
+    # any_cloud                are there any cloud layers present in the contrail-free data?
  
     pressure_hPa = pressure * 0.01
     pressure_edges_rrtm_hPa = pressure_edges_rrtm * 0.01
@@ -729,13 +752,20 @@ def edit_sw_input( file_sw_in, file_sw_out, pressure, temperature, relative_humi
     f_in.close()
     
     # Control line - record whether or not to use MCA for cloud overlap
-    iline = 4
+    iline_ctrl = 4
     if use_mca:
         mca_int = 1
+        cld_int_cloudy = 2
     else:
         mca_int = 0
-    ctrl_line = ' HI=1 F4=1 CN=1 AE 0 EM=0 SC=0 FI=0 PL=0 TS=0 AM=1 MG=1 LA=0    1        00   00  1 0    0   {:01d}2   00\n'.format(mca_int)
-    lines[iline] = ctrl_line
+        cld_int_cloudy = 1
+    
+    if any_cloud:
+        cld_int = cld_int_cloudy
+    else:
+        cld_int = 0
+    ctrl_line_clr = ' HI=1 F4=1 CN=1 AE 0 EM=0 SC=0 FI=0 PL=0 TS=0 AM=1 MG=1 LA=0    1        00   00  1 0    0   {:01d}{:01d}   00\n'.format(mca_int,cld_int)
+    ctrl_line_cld = ' HI=1 F4=1 CN=1 AE 0 EM=0 SC=0 FI=0 PL=0 TS=0 AM=1 MG=1 LA=0    1        00   00  1 0    0   {:01d}{:01d}   00\n'.format(mca_int,cld_int_cloudy)
     
     # Record 1.2.1
     iline = 5
@@ -804,12 +834,14 @@ def edit_sw_input( file_sw_in, file_sw_out, pressure, temperature, relative_humi
         lines[iline] = ''
         iline += 1
     
-    # Write to cloudy sky file
+    # Write to clear sky file
+    lines[iline_ctrl] = ctrl_line_clr
     lines_clr = "".join(lines)
     f_out_clr.write(lines_clr)
     f_out_clr.close()
     
     # Write to cloudy sky file
+    lines[iline_ctrl] = ctrl_line_cld
     lines_cld = "".join(lines)
     f_out_cld.write(lines_cld)
     f_out_cld.close()
@@ -818,7 +850,11 @@ def edit_sw_input( file_sw_in, file_sw_out, pressure, temperature, relative_humi
 
 # Edit the cloud input file
 def edit_cld_input( file_cld_in, file_cld_out, IWC_rrtm, reff_rrtm, cldfr, cliqwp, cicewp ):
-    # IWC_rrtm[:]              vector of ice water content in each grid cell on the RRTM levels
+    # IWC_rrtm[:]              CONTRAIL ice water content in each grid cell on the RRTM levels
+    # reff_rrtm                CONTRAIL effective radius
+    # cldfr                    met data cloud fraction
+    # cliqwp                   met data liquid water path
+    # cicewp                   met data ice water path
     
     # Natural cloud data
     REL_DEF = 14.2
@@ -833,6 +869,9 @@ def edit_cld_input( file_cld_in, file_cld_out, IWC_rrtm, reff_rrtm, cldfr, cliqw
     lines_clr = f_in.readlines()
     lines_cld = list( lines_clr ) # f_in.readlines()
     f_in.close()
+    
+    # Assume no cloud in the met data initially
+    any_cloud = False
     
     # Record C1.2 (clear)
     iline = 1
@@ -852,6 +891,7 @@ def edit_cld_input( file_cld_in, file_cld_out, IWC_rrtm, reff_rrtm, cldfr, cliqw
                                                         0.0, 0.0 )
             lines_clr.insert( iline, string )
             iline+=1
+            any_cloud = True
     
     # Record C1.2 (cloudy)
     iline = 1
@@ -943,7 +983,7 @@ def edit_cld_input( file_cld_in, file_cld_out, IWC_rrtm, reff_rrtm, cldfr, cliqw
     f_out_cld.write(lines)
     f_out_cld.close()
     
-    return file_cld_out+'_clr', file_cld_out+'_cld'
+    return file_cld_out+'_clr', file_cld_out+'_cld', any_cloud
 
 # Integrate using simple sum between low and high values
 def summation( y, x, x_lo, x_hi ):
@@ -976,117 +1016,6 @@ def gen_zoh( xdata, ydata ):
     
     return func_zoh
 
-#def main_function(ts_aerosol_folder, z_flight, apcemm_met_input_file):
-#    # Load input data
-#    nc_input = nc.Dataset( apcemm_met_input_file )
-#    # evaporation_depth = nc_input['evaporation_depth'][:]
-##     if ( evaporation_depth==0 ) | ( np.isnan( evaporation_depth ) ):
-##         print( '    Evaporation depth = 0... Skipping' )
-##         return 0, 0, 0, 0, 0, 0, 0, 0
-#    pressure = nc_input['pressure'][:]
-#    altitude = nc_input['altitude'][:]*1.0E+03
-#    temperature = nc_input['temperature'][:]
-#    relative_humidity = nc_input['relative_humidity'][:]
-#    
-#    # Calculate layer edges for altitudes
-#    altitude_edges = np.zeros( len(altitude) + 1 )
-#    altitude_edges[1:-1] = 0.5*( altitude[1:] + altitude[:-1] )
-#    altitude_edges[-1] = 2*altitude[-1] - altitude_edges[-2]
-#    
-#    # Calculate layer edges for pressures
-#    pressure_edges = np.zeros( len(pressure) + 1 )
-#    pressure_edges[1:-1] = 10**(0.5*( np.log10(pressure[1:]) + np.log10(pressure[:-1]) ))
-#    pressure_edges[0] = 10**(2*np.log10(pressure[0]) - np.log10(pressure_edges[1]))
-#    pressure_edges[-1] = 10**(2*np.log10(pressure[-1]) - np.log10(pressure_edges[-2]))
-#
-#    # Flight time / location
-#    year = 2018
-#    month = 1
-#    day = 20
-#    hour = 8
-#    flight_latitude = 20.0
-#    flight_longitude = -15.0
-#
-#    flight_datetime = dt.datetime(year, month, day, hour)
-#    
-#    # Copy rrtm executables to desired location
-#    # copyfile( '/net/d08/data/aa681/RRTMG/rrtmg_lw_v4.85_TAMU_v3/column_model/sonde_runs/test_versions/rrtmg_lw_wcomments', \
-#    #           'rrtmg_lw_wcomments' )
-#    # copyfile( '/net/d08/data/aa681/RRTMG/rrtmg_sw_v4.02_TAMU_v0/column_model/sonde_runs/test_versions/rrtmg_sw_alb', \
-#    #           'rrtmg_sw_wcomments' )
-#
-#    copyfile( '/home/xu990/rrtm_executables/rrtmg_lw_wcomments', \
-#              'rrtmg_lw_wcomments' )
-#    copyfile( '/home/xu990/rrtm_executables/rrtmg_sw_wcomments', \
-#              'rrtmg_sw_wcomments' )
-#    # Convert lw to executable
-#    bashCommand = 'chmod +x rrtmg_sw_wcomments'
-#    process = subprocess.Popen( bashCommand.split(), stdout=subprocess.PIPE )
-#    output, error = process.communicate()
-#    
-#    # Get aerosol files
-#    aerosol_files = np.sort( glob(f'{ts_aerosol_folder}/ts_aerosol*' ) )
-#    aerosol_files = aerosol_files
-#    nfiles = len( aerosol_files )
-#    if nfiles==0:
-#        print( '    No aerosol files... Skipping' )
-#        return 0, 0, 0, 0, 0, flight_datetime, flight_latitude, flight_longitude, 0, 0, 0, 0, 0, 0, 0
-#    
-#    # Get grid dimensions and zero out output variables
-#    nc_apcemm = nc.Dataset( aerosol_files[0] )
-#    X, Y, areaCell = aps.getAPCEMM_grid( nc_apcemm )
-#    dY = Y[2] - Y[1]
-#    number2sum = 16
-#    approach = 0
-#    ncol_model = len(X)
-#    ncol = ncols_apcemm_colsums( ncol_model, approach=approach, number2sum=number2sum )
-#    nrow = len(Y)
-#    if met_data_flag == 'MERRA2':
-#        n_alt = 72
-#        n_emis= 1
-#    elif met_data_flag == 'ERA5':
-#        n_alt = 28
-#        n_emis= 1
-#    else:
-#        raise ValueError('Invalid met_data_flag: %s' %met_data_flag)
-#    Net_RF = np.zeros(nfiles) 
-#    LW_RF = np.zeros(nfiles)
-#    SW_RF = np.zeros(nfiles)
-#    time = np.zeros(nfiles)
-#    sza = np.zeros( nfiles )
-#    emissivity = np.zeros( (n_emis, nfiles) )
-#    icemass = np.zeros( nfiles )
-#    icenumber = np.zeros( nfiles )
-#    cldfr = np.zeros( (n_alt, nfiles) )
-#    cliqwp = np.zeros( (n_alt, nfiles) )
-#    cicewp = np.zeros( (n_alt, nfiles) )
-#    
-#    # Loop over aerosol files
-#    for ifile, file in enumerate( aerosol_files ):
-#        
-#        Net_RF[ifile], LW_RF[ifile], SW_RF[ifile], time = APCEMM2RRTM_V2( file, pressure, altitude, temperature, \
-#                                                                            relative_humidity, z_flight, flight_latitude, \
-#                                                                            flight_longitude, flight_datetime, number2sum, approach)
-#        
-#    out_filename = ts_aerosol_folder + "/rrtm_output.csv"
-#    out_df = pd.DataFrame(data={"Net_RF": Net_RF, "LW_RF": LW_RF, "SW_RF": SW_RF, "time": time})
-#    out_df.to_csv(out_filename)
-
-
-def non_increasing(L):
-    return all(x>y for x, y in zip(L, L[1:]))
-
-def non_decreasing(L):
-    return all(x<y for x, y in zip(L, L[1:]))
-
-def monotonic(L):
-    return non_increasing(L) or non_decreasing(L)
-
-#apcemm_met_input_file ='/home/xu990/contrail_advection_pipeline/traces/traces/20180120_07_37_185_FDX52_met_trace_y2018_contrail_c0_000000.nc'
-#ts_aerosol_folder = "/home/xu990/contrail_lidar_comparisons/APCEMM_const_rhi/20180709_19_14_36_N346L/EI_soot_0.01"
-#z_flight = 10800.0
-#main_function(ts_aerosol_folder, z_flight, apcemm_met_input_file)
-
 def calc_sza(lat,lon,curr_dt):
     return 90.0 - pys.get_altitude_fast(lat,lon,curr_dt.replace(tzinfo=dt.timezone.utc))
 
@@ -1096,12 +1025,17 @@ def APCEMM_RF(ts_dir,z_flight,flight_datetime,lat_vec,lon_vec,
               dt=None,dt_max=None,
               number2sum=16,approach=0,
               min_icemass=1.0e-5,verbose=False,
-              clean_dir=True,use_mca_lw=False,use_mca_sw=True):
+              clean_dir=True,use_mca_lw=True,
+              use_mca_sw=True,max_sza=90.0,
+              use_single=False):
              
     from run_RRTM import run_directory
     from time import time
     from datetime import timedelta
-
+    
+    if (not use_mca_lw) or (not use_mca_sw):
+        print('WARNING: contrail impacts are only calculated when MCA is enabled')
+    
     # Step 1: Generate RRTM input files
     if dt is None:
         dt = timedelta(minutes=10)
@@ -1156,6 +1090,7 @@ def APCEMM_RF(ts_dir,z_flight,flight_datetime,lat_vec,lon_vec,
             lon = lon_vec[i_time]
         sza = calc_sza(lat,lon,dt_curr + flight_datetime)
         sza_vec.append(sza)
+        skip_sw = np.abs(sza) > max_sza
         ncol, dx, x, x_b, y, y_b = APCEMM2RRTM_V2(f_APCEMM,z_flight,
                                                   flight_datetime,number2sum,
                                                   approach,altitude_edges,fn_z_to_p,
@@ -1164,7 +1099,7 @@ def APCEMM_RF(ts_dir,z_flight,flight_datetime,lat_vec,lon_vec,
                                                   albnirdr=albnirdr,albvisdf=albvisdf,
                                                   albvisdr=albvisdr,sza=sza,
                                                   verbose=False,use_mca_sw=use_mca_sw,
-                                                  use_mca_lw=use_mca_lw)
+                                                  use_mca_lw=use_mca_lw,skip_sw=skip_sw)
         dx_data[tstamp] = dx
         x_data[tstamp] = x
         xb_data[tstamp] = x_b
@@ -1176,14 +1111,14 @@ def APCEMM_RF(ts_dir,z_flight,flight_datetime,lat_vec,lon_vec,
     # Step 2: Run RRTM
     t_start = time()
     rrtm_dir = os.path.join(ts_dir,'rrtm')
-    run_directory(rrtm_dir,sw_bin=sw_bin,lw_bin=lw_bin,verbose=verbose)
+    run_directory(rrtm_dir,sw_bin=sw_bin,lw_bin=lw_bin,verbose=verbose,use_single=use_single)
     t_stop = time()
     t_RRTM = t_stop-t_start
     if verbose:
         print('Completed calculations in {:.1f} seconds'.format(t_RRTM))
 
     # Step 3: Calculate forcing 
-    f_list = [x for x in os.listdir(rrtm_dir) if x.startswith('sw_output_t') and x.endswith('_clr')]
+    f_list = [x for x in os.listdir(rrtm_dir) if x.startswith('lw_output_t') and x.endswith('_clr')]
     rf = {'net': [], 'sw': [], 'lw': []}
     rf_2D = {'net': [], 'sw': [], 'lw': [], 'width': []}
     dt_curr = dt_base
