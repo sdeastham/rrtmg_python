@@ -337,7 +337,7 @@ def APCEMM2RRTM_V2( apcemm_data_file,z_flight,
             print( '       ', icol, np.sum(icemass_vol_col)*areaCell )
        
         # Map APCEMM data onto a full column grid for RRTM
-        pressure_edges_rrtm, IWC_rrtm, reff_rrtm, cldfr_rrtm, cliqwp_rrtm, cicewp_rrtm = \
+        pressure_edges_rrtm, IWC_rrtm, reff_rrtm, cldfr_rrtm, cliqwp_rrtm, cicewp_rrtm, altitude_edges_rrtm = \
                 convertConditions( icemass_vol_col, icenumber_vol_col, effradius_col, \
                                    altitude_apcemm, altitude_edges, fn_z_to_p, cldfr, \
                                    clwp, ciwp )
@@ -445,7 +445,7 @@ def convertConditions( icemass_vol_col, icenumber_vol_col, effradius_col, \
             reff_rrtm[layer] = summation( icemass_vol_col*2*effradius_col, altitude_apcemm, \
                                           Z_layer_low, Z_layer_high )/IWC_temp
     
-    return pressure_edges_rrtm, IWC_rrtm, reff_rrtm, cldfr_rrtm, cliqwp_rrtm, cicewp_rrtm
+    return pressure_edges_rrtm, IWC_rrtm, reff_rrtm, cldfr_rrtm, cliqwp_rrtm, cicewp_rrtm, altitude_edges_rrtm
 
 # Load in RRTM output
 def readRRTMOutput( folderpath, file_lw_clr, file_sw_clr, 
@@ -1182,3 +1182,8 @@ def clean_rrtm_dir(dirpath,clean_input=True,clean_output=True):
         for f in f_list:
             os.remove(os.path.join(dirpath,f))
     return
+
+def monotonic(x):
+    pos = np.all(x[1:] >= x[:-1])
+    neg = np.all(x[1:] <= x[:-1])
+    return pos or neg
