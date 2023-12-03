@@ -849,8 +849,8 @@ def edit_sw_input( file_sw_in, file_sw_out, pressure, temperature, relative_humi
     return file_sw_out+'_clr', file_sw_out+'_cld'
 
 # Edit the cloud input file
-def edit_cld_input( file_cld_in, file_cld_out, IWC_rrtm, reff_rrtm, cldfr, cliqwp, cicewp ):
-    # IWC_rrtm[:]              CONTRAIL ice water content in each grid cell on the RRTM levels
+def edit_cld_input( file_cld_in, file_cld_out, iwp_rrtm, reff_rrtm, cldfr, cliqwp, cicewp ):
+    # iwp_rrtm[:]              CONTRAIL ice water path in each grid cell on the RRTM levels
     # reff_rrtm                CONTRAIL effective radius
     # cldfr                    met data cloud fraction
     # cliqwp                   met data liquid water path
@@ -876,7 +876,7 @@ def edit_cld_input( file_cld_in, file_cld_out, IWC_rrtm, reff_rrtm, cldfr, cliqw
     # Record C1.2 (clear)
     iline = 1
     # for layer, cur_cldfr in enumerate(cldfr):
-    for layer, cur_coniwp in enumerate(IWC_rrtm):
+    for layer, cur_coniwp in enumerate(iwp_rrtm):
         # Get cloud data
         cur_cldfr = cldfr[layer]
         cur_cliqwp = cliqwp[layer]
@@ -896,7 +896,8 @@ def edit_cld_input( file_cld_in, file_cld_out, IWC_rrtm, reff_rrtm, cldfr, cliqw
     # Record C1.2 (cloudy)
     iline = 1
     # for layer, cur_cldfr in enumerate(cldfr):
-    for layer, cur_coniwp in enumerate(IWC_rrtm):
+    # Convert from kg/m2 to g/m2
+    for layer, cur_coniwp in enumerate(iwp_rrtm*1000.0):
         # Get cloud data
         cur_cldfr = cldfr[layer]
         cur_cliqwp = cliqwp[layer]
