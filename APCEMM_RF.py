@@ -17,6 +17,13 @@ import matplotlib.dates as mdates
 import xarray as xr
 import stat
 
+try:
+    from pyLRT import RadTran, get_lrt_folder
+    import copy
+    libRadtran_present = True
+except:
+    libRadtran_present = False
+
 # How to run
 nproc = 1 # If nproc = 1, run in serial mode
 
@@ -190,7 +197,8 @@ def APCEMM2RRTM_V2( apcemm_data_file,z_flight,
                     emissivity=None,albnirdf=None,albnirdr=None,
                     albvisdf=None,albvisdr=None,sza=None,
                     cldfr=None,clwp=None,ciwp=None,
-                    use_mca_lw=True,use_mca_sw=True,skip_sw=False):
+                    use_mca_lw=True,use_mca_sw=True,skip_sw=False,
+                    use_libRadtran=False):
     # apcemm_data_file                Location of input ts_aerosol_etc file
     # z_flight                        Altitude at which the contrail is initiated (m)
     # flight_datetime                 Date of the flight (datetime object)
@@ -216,6 +224,7 @@ def APCEMM2RRTM_V2( apcemm_data_file,z_flight,
     # use_mca_lw                      Use MCA for cloud overlap on LW calculations? (See comment*)
     # use_mca_sw                      Use MCA for cloud overlap on SW calculations? (See comment*)
     # skip_sw                         Only create LW input files
+    # use_libRadtran                  Use libRadtran instead of RRTMG
     # * A comment in the LW code mentions that McICA is not recommended for use with the TAMU updates,
     #   but an email conversation between Akshat Agarwal and TAMU in 2021 indicated that there was no
     #   physical reason to not implement the changes in McICA. It is not yet clear if the latest
@@ -325,6 +334,7 @@ def APCEMM2RRTM_V2( apcemm_data_file,z_flight,
 
     # Loop over columns
     #print( sza, emissivity, albnirdf, albnirdr, albvisdf, albvisdr, tropopause )
+    aux_data = []
     for icol in range(ncol):
         
         # Extract information for a specific column
@@ -337,39 +347,69 @@ def APCEMM2RRTM_V2( apcemm_data_file,z_flight,
             print( '       ', icol, np.sum(icemass_vol_col)*areaCell )
        
         # Map APCEMM data onto a full column grid for RRTM
-        pressure_edges_rrtm, IWC_rrtm, reff_rrtm, cldfr_rrtm, cliqwp_rrtm, cicewp_rrtm, altitude_edges_rrtm = \
+        pressure_edges_rrtm, iwp_rrtm, reff_rrtm, cldfr_rrtm, cliqwp_rrtm, cicewp_rrtm, altitude_edges_rrtm = \
                 convertConditions( icemass_vol_col, icenumber_vol_col, effradius_col, \
                                    altitude_apcemm, altitude_edges, fn_z_to_p, cldfr, \
                                    clwp, ciwp )
         if ( not monotonic( pressure_edges_rrtm ) ):
             for idx, val in enumerate( pressure_edges_rrtm[:-1] ):
-                print( val, IWC_rrtm[idx], reff_rrtm[idx] )
+                print( val, iwp_rrtm[idx], reff_rrtm[idx] )
             print( apcemm_data_file )
             #sys.exit(0)
             raise ValueError('Non-monotonic pressure edges')
 
-        # File names to edit
-        #rrtm_lw_binary_path = 'rrtmg_lw_wcomments'
-        #rrtm_sw_binary_path = 'rrtmg_sw_wcomments'
-        file_tag = 't{:02d}{:02d}_c{:03d}'.format(int(hh),int(mm),icol)
-        file_lw_in   = os.path.join(ref_dir,'input_rrtm_lw_template')
-        file_lw_out  = os.path.join(apcemm_folder_rrtm,'lw_input_{:s}'.format(file_tag))
-        file_sw_in   = os.path.join(ref_dir,'input_rrtm_sw_template')
-        file_sw_out  = os.path.join(apcemm_folder_rrtm,'sw_input_{:s}'.format(file_tag))
-        file_cld_in  = os.path.join(ref_dir,'incld_rrtm_lw_template')
-        file_cld_out = os.path.join(apcemm_folder_rrtm,'cld_input_{:s}'.format(file_tag))
-        
-        file_cld_out_clr, file_cld_out_cld,any_cloud = edit_cld_input( file_cld_in, file_cld_out,
-                                                                       IWC_rrtm, reff_rrtm, cldfr_rrtm,
-                                                                       cliqwp_rrtm, cicewp_rrtm )
-        file_lw_out_clr, file_lw_out_cld = edit_lw_input( file_lw_in, file_lw_out, pressure, temperature,
-                                                          pressure_edges_rrtm, relative_humidity, emissivity, use_mca_lw,any_cloud )
-        if not skip_sw:
-            file_sw_out_clr, file_sw_out_cld = edit_sw_input( file_sw_in, file_sw_out, pressure, temperature, relative_humidity, 
-                                                              pressure_edges_rrtm, emissivity, julian_day, sza, albnirdf, albnirdr,
-                                                              albvisdf, albvisdr,use_mca_sw,any_cloud)
+        if use_libRadtran:
+            # Generate the liquid and ice cloud vectors
+            # These are top-down, of course
+            # Convert ice water path (kg/m2) to ice water content (g/m3)
+            iwc_rrtm = 1.0e3 * iwp_rrtm / np.diff(altitude_edges_rrtm)
+            # Convert m to km
+            z_vec = altitude_edges_rrtm[::-1]/1000.0
+            iwc = np.zeros(z_vec.shape)
+            iwc[1:] = iwc_rrtm[::-1]
+            r_eff = np.zeros(z_vec.shape)
+            r_eff[1:] = reff_rrtm[::-1] * 1.0e6 # Convert m to um
+            # Remove unnecessary layers
+            nz = np.nonzero(iwc)[0]
+            # Start from the zero above the first non-zero value
+            first_idx = nz[0] - 1
+            # Add one because we do actually want that last value
+            last_idx  = nz[-1] + 1
+            contrail_data = {'z':   np.array(z_vec[first_idx:last_idx]),
+                             'iwc': np.array(iwc[first_idx:last_idx]), # g/m3
+                             're':  np.array(r_eff[first_idx:last_idx])}
+
+            slrt_clear, slrt_cloudy, tlrt_clear, tlrt_cloudy = setup_LRT(
+                    ice_data=contrail_data,emissivity=emissivity,albedo=albvisdr,
+                    sza=sza,lrt_data_path=None,env=None)
+            aux_data.append({'slrt_clear':  slrt_clear,
+                             'slrt_cloudy': slrt_cloudy,
+                             'tlrt_clear':  tlrt_clear,
+                             'tlrt_cloudy': tlrt_cloudy,
+                             'sza': sza})
+        else:
+            # File names to edit
+            file_tag = 't{:02d}{:02d}_c{:03d}'.format(int(hh),int(mm),icol)
+            file_lw_in   = os.path.join(ref_dir,'input_rrtm_lw_template')
+            file_lw_out  = os.path.join(apcemm_folder_rrtm,'lw_input_{:s}'.format(file_tag))
+            file_sw_in   = os.path.join(ref_dir,'input_rrtm_sw_template')
+            file_sw_out  = os.path.join(apcemm_folder_rrtm,'sw_input_{:s}'.format(file_tag))
+            file_cld_in  = os.path.join(ref_dir,'incld_rrtm_lw_template')
+            file_cld_out = os.path.join(apcemm_folder_rrtm,'cld_input_{:s}'.format(file_tag))
+
+            file_cld_out_clr, file_cld_out_cld,any_cloud = edit_cld_input( file_cld_in, file_cld_out,
+                                                                           iwp_rrtm, reff_rrtm, cldfr_rrtm,
+                                                                           cliqwp_rrtm, cicewp_rrtm )
+            file_lw_out_clr, file_lw_out_cld = edit_lw_input( file_lw_in, file_lw_out, pressure, temperature,
+                                                              pressure_edges_rrtm, relative_humidity, emissivity, use_mca_lw,any_cloud )
+            if not skip_sw:
+                file_sw_out_clr, file_sw_out_cld = edit_sw_input( file_sw_in, file_sw_out, pressure, temperature, relative_humidity, 
+                                                                  pressure_edges_rrtm, emissivity, julian_day, sza, albnirdf, albnirdr,
+                                                                  albvisdf, albvisdr,use_mca_sw,any_cloud)
+            
+            aux_data = None
     
-    return ncol, dx_sum, x_vec, xb_vec, y_vec, yb_vec
+    return ncol, dx_sum, x_vec, xb_vec, y_vec, yb_vec, aux_data
     
     #return np.dot(Net_RF, width_sum), np.dot(LW_RF, width_sum), np.dot(SW_RF, width_sum), time #, sza, emissivity, cldfr, cliqwp, cicewp
 
@@ -399,9 +439,9 @@ def convertConditions( icemass_vol_col, icenumber_vol_col, effradius_col, \
         altitude_edges_rrtm = altitude_edges
         altitude_rrtm = 0.5*( altitude_edges_rrtm[1:] + altitude_edges_rrtm[:-1] )
         pressure_edges_rrtm = fn_z_to_p( altitude_edges_rrtm )
-        IWC_rrtm = np.zeros( len(altitude_rrtm) )
+        iwp_rrtm = np.zeros( len(altitude_rrtm) )
         reff_rrtm = np.zeros( len(altitude_rrtm) )
-        return pressure_edges_rrtm, IWC_rrtm, reff_rrtm, cldfr, cliqwp, cicewp
+        return pressure_edges_rrtm, iwp_rrtm, reff_rrtm, cldfr, cliqwp, cicewp
     
     # Find layer below Ylo and above Yhi
     met_lo_idx = len(altitude_edges) - np.argmax( altitude_edges[::-1]<Ylo ) - 1
@@ -431,21 +471,22 @@ def convertConditions( icemass_vol_col, icenumber_vol_col, effradius_col, \
     # Loop over each inserted layer and calculate IWC and effective radius
     f_zoh_icevol = gen_zoh( altitude_apcemm, icemass_vol_col ) # Use to integrate ice mass
     f_zoh_deff = gen_zoh( altitude_apcemm, 2*effradius_col ) # Use to integrate ice number
-    IWC_rrtm = np.zeros( len(altitude_rrtm) )
+    iwp_rrtm = np.zeros( len(altitude_rrtm) )
     reff_rrtm = np.zeros( len(altitude_rrtm) )
     for layer in np.arange( met_lo_idx, met_hi_idx ):
         Z_layer_low = altitude_edges_rrtm[layer]
         Z_layer_high = altitude_edges_rrtm[layer+1]
-        IWC_temp = summation( icemass_vol_col, altitude_apcemm, Z_layer_low, Z_layer_high )
-        if IWC_temp < 1E-10:
-            IWC_rrtm[layer] = 0
+        # Ice water path in kg/m2
+        iwp_temp = summation( icemass_vol_col, altitude_apcemm, Z_layer_low, Z_layer_high )
+        if iwp_temp < 1E-10:
+            iwp_rrtm[layer] = 0
             reff_rrtm[layer] = 0
         else:
-            IWC_rrtm[layer] = IWC_temp # sint.quad( f_zoh_icevol, Z_layer_low, Z_layer_high )[0]
+            iwp_rrtm[layer] = iwp_temp # sint.quad( f_zoh_icevol, Z_layer_low, Z_layer_high )[0]
             reff_rrtm[layer] = summation( icemass_vol_col*2*effradius_col, altitude_apcemm, \
-                                          Z_layer_low, Z_layer_high )/IWC_temp
+                                          Z_layer_low, Z_layer_high )/iwp_temp
     
-    return pressure_edges_rrtm, IWC_rrtm, reff_rrtm, cldfr_rrtm, cliqwp_rrtm, cicewp_rrtm, altitude_edges_rrtm
+    return pressure_edges_rrtm, iwp_rrtm, reff_rrtm, cldfr_rrtm, cliqwp_rrtm, cicewp_rrtm, altitude_edges_rrtm
 
 # Load in RRTM output
 def readRRTMOutput( folderpath, file_lw_clr, file_sw_clr, 
@@ -1028,13 +1069,15 @@ def APCEMM_RF(ts_dir,z_flight,flight_datetime,lat_vec,lon_vec,
               min_icemass=1.0e-5,verbose=False,
               clean_dir=True,use_mca_lw=True,
               use_mca_sw=True,max_sza=90.0,
-              use_single=False):
+              use_single=False,use_libRadtran=False):
              
     from run_RRTM import run_directory
     from time import time
     from datetime import timedelta
     
-    if (not use_mca_lw) or (not use_mca_sw):
+    if use_libRadtran:
+        assert libRadtran_present, 'libRadtran is not available'
+    elif (not use_mca_lw) or (not use_mca_sw):
         print('WARNING: contrail impacts are only calculated when MCA is enabled')
     
     # Step 1: Generate RRTM input files
@@ -1065,7 +1108,8 @@ def APCEMM_RF(ts_dir,z_flight,flight_datetime,lat_vec,lon_vec,
     sza_vec = []
     x_data = {}
     xb_data = {}
-    
+    if use_libRadtran:
+        lrt_input = {}
     t_start = time()
     while dt_curr < dt_max:
         total_sec = dt_curr.total_seconds()
@@ -1092,64 +1136,96 @@ def APCEMM_RF(ts_dir,z_flight,flight_datetime,lat_vec,lon_vec,
         sza = calc_sza(lat,lon,dt_curr + flight_datetime)
         sza_vec.append(sza)
         skip_sw = np.abs(sza) > max_sza
-        ncol, dx, x, x_b, y, y_b = APCEMM2RRTM_V2(f_APCEMM,z_flight,
-                                                  flight_datetime,number2sum,
-                                                  approach,altitude_edges,fn_z_to_p,
-                                                  temperature,rh,ref_dir=ref_dir_abs,
-                                                  emissivity=emissivity,albnirdf=albnirdf,
-                                                  albnirdr=albnirdr,albvisdf=albvisdf,
-                                                  albvisdr=albvisdr,sza=sza,
-                                                  verbose=False,use_mca_sw=use_mca_sw,
-                                                  use_mca_lw=use_mca_lw,skip_sw=skip_sw)
+        ncol, dx, x, x_b, y, y_b, aux = APCEMM2RRTM_V2(f_APCEMM,z_flight,
+                                                       flight_datetime,number2sum,
+                                                       approach,altitude_edges,fn_z_to_p,
+                                                       temperature,rh,ref_dir=ref_dir_abs,
+                                                       emissivity=emissivity,albnirdf=albnirdf,
+                                                       albnirdr=albnirdr,albvisdf=albvisdf,
+                                                       albvisdr=albvisdr,sza=sza,
+                                                       verbose=False,use_mca_sw=use_mca_sw,
+                                                       use_mca_lw=use_mca_lw,skip_sw=skip_sw,
+                                                       use_libRadtran=use_libRadtran)
         dx_data[tstamp] = dx
         x_data[tstamp] = x
         xb_data[tstamp] = x_b
         ncol_data[tstamp] = ncol
+        if use_libRadtran:
+            lrt_input[tstamp] = aux # Vector of dicts - one entry per column
         dt_curr += dt
     t_stop = time()
     t_input_gen = t_stop-t_start
         
-    # Step 2: Run RRTM
+    # Step 2: Run radiative transfer
     t_start = time()
-    rrtm_dir = os.path.join(ts_dir,'rrtm')
-    run_directory(rrtm_dir,sw_bin=sw_bin,lw_bin=lw_bin,verbose=verbose,use_single=use_single)
+    if use_libRadtran:
+        lrt_output = run_LRT_set(lrt_input)
+    else:
+        rrtm_dir = os.path.join(ts_dir,'rrtm')
+        run_directory(rrtm_dir,sw_bin=sw_bin,lw_bin=lw_bin,verbose=verbose,use_single=use_single)
     t_stop = time()
-    t_RRTM = t_stop-t_start
+    t_RT = t_stop-t_start
     if verbose:
-        print('Completed calculations in {:.1f} seconds'.format(t_RRTM))
+        print('Completed calculations in {:.1f} seconds'.format(t_RT))
 
     # Step 3: Calculate forcing 
-    f_list = [x for x in os.listdir(rrtm_dir) if x.startswith('lw_output_t') and x.endswith('_clr')]
+    if not use_libRadtran:
+        f_list = [x for x in os.listdir(rrtm_dir) if x.startswith('lw_output_t') and x.endswith('_clr')]
     rf = {'net': [], 'sw': [], 'lw': []}
     rf_2D = {'net': [], 'sw': [], 'lw': [], 'width': []}
     dt_curr = dt_base
     t = []
     t_start = time()
     while dt_curr < dt_max:
+        net = 0
+        lw = 0
+        sw = 0
         total_sec = dt_curr.total_seconds()
         hh = int(np.floor(total_sec/3600.0))
         mm = int(np.mod(total_sec/60.0,60))
         tstamp = '{:02d}{:02d}'.format(hh,mm)
-        f_list_mini = [x for x in f_list if 't' + tstamp in x]
-        ncol = len(f_list_mini)
+        if use_libRadtran:
+            if tstamp in lrt_input.keys():
+                input_set = lrt_input[tstamp]
+                output_set = lrt_output[tstamp]
+                ncol = len(input_set)
+            else:
+                ncol = 0
+        else:
+            f_list_mini = [x for x in f_list if 't' + tstamp in x]
+            ncol = len(f_list_mini)
         if ncol == 0:
             break
-        net = 0
-        lw = 0
-        sw = 0
         col_width = dx_data[tstamp]
         rf_2D['width'].append(col_width)
-        ncol = len(f_list_mini)
         rf_2D['net'].append(np.zeros(ncol))
         rf_2D['lw'].append(np.zeros(ncol))
         rf_2D['sw'].append(np.zeros(ncol))
-        for icol, f in enumerate(f_list_mini):
-            column = int(f.split('_')[3][1:])
-            f_lw_clr = 'lw_output_t{:s}_c{:03d}_clr'.format(tstamp,column)
-            f_sw_clr = 'sw_output_t{:s}_c{:03d}_clr'.format(tstamp,column)
-            f_lw_cld = 'lw_output_t{:s}_c{:03d}_cld'.format(tstamp,column)
-            f_sw_cld = 'sw_output_t{:s}_c{:03d}_cld'.format(tstamp,column)
-            net_col, lw_col, sw_col = readRRTMOutput(rrtm_dir,f_lw_clr,f_sw_clr,f_lw_cld,f_sw_cld)
+        #for icol, f in enumerate(f_list_mini):
+        for icol in range(ncol):
+            if use_libRadtran:
+                # Convention: LW and SW are both calculated as upwelling minus downwelling
+                # The output stored is the change in net outbound resulting from
+                # inclusion of the contrail layer - so a positive value means
+                # a negative radiative forcing
+                # Change this so that it matches the RRTMG convention, where positive
+                # LW values mean warming and positive SW values mean cooling
+                net_col = -1.0 * output_set['net'][icol]
+                lw_col = -1.0 * output_set['lw'][icol]
+                sw_col = output_set['sw'][icol]
+            else:
+                # Convention: net = LW - SW
+                # LW is positive inbound, SW is positive outbound
+                # Net is taken as LW - SW
+                f = f_list_mini[icol]
+                column = int(f.split('_')[3][1:])
+                f_lw_clr = 'lw_output_t{:s}_c{:03d}_clr'.format(tstamp,column)
+                f_sw_clr = 'sw_output_t{:s}_c{:03d}_clr'.format(tstamp,column)
+                f_lw_cld = 'lw_output_t{:s}_c{:03d}_cld'.format(tstamp,column)
+                f_sw_cld = 'sw_output_t{:s}_c{:03d}_cld'.format(tstamp,column)
+                # Net = LW - SW
+                # LW/SW = Clear - Cloudy
+                net_col, lw_col, sw_col = readRRTMOutput(rrtm_dir,f_lw_clr,f_sw_clr,f_lw_cld,f_sw_cld)
             # Store the "full" data
             rf_2D['net'][-1][icol] = net_col
             rf_2D['lw'][-1][icol] = lw_col
@@ -1167,7 +1243,7 @@ def APCEMM_RF(ts_dir,z_flight,flight_datetime,lat_vec,lon_vec,
     t_postprocess = t_stop - t_start
         
     aux_data = {'rf_2D': rf_2D, 'sza': sza_vec, 'x_b': xb_data, 'x': x_data,
-                'timing': {'Input': t_input_gen, 'RRTM': t_RRTM, 'Postprocessing': t_postprocess}}
+                'timing': {'Input': t_input_gen, 'RT': t_RT, 'Postprocessing': t_postprocess}}
     return t, rf, aux_data
 
 def clean_rrtm_dir(dirpath,clean_input=True,clean_output=True):
@@ -1188,3 +1264,152 @@ def monotonic(x):
     pos = np.all(x[1:] >= x[:-1])
     neg = np.all(x[1:] <= x[:-1])
     return pos or neg
+
+# libRadtran-based stuff
+def setup_LRT(ice_data,emissivity,albedo,sza,lrt_data_path=None,env=None):
+    if lrt_data_path is None:
+        lrt_data_path = '/home/seastham/libRadtran/lrt_2.0.5/share/libRadtran/data'
+    if env is None:
+        env = {'LD_LIBRARY_PATH': '/home/seastham/libRadtran/gsl_2.7/lib:/home/seastham/.conda/envs/gcpy1.3/lib'}
+
+    LIBRADTRAN_FOLDER = get_lrt_folder()
+    
+    spectrum_solar   = 'kato2'
+    spectrum_thermal = 'fu'
+    
+    run_wolf = False
+    xopts = {}
+    
+    ice_data_mod = copy.deepcopy(ice_data)
+    if run_wolf:
+        ice_model = 'yang'
+        habit = 'rough-aggregate'
+        r_min = 3.56 # for yang
+        # Example conditions from Wolf et al. 2023
+        albedo = 0.0
+        emissivity = [1.0]
+        sza = 0.0
+        r_eff = np.where(ice_data['re'] > 0.0,85.0,0.0)
+        ice_data_mod['re'] = [0,85]
+        ice_data_mod['z'] = [10,9]
+        ice_data_mod['iwc'] = [0,0.024]
+        xopts['sur_temperature'] = 299.7
+        # Ice cloud temperature of 219 K
+        # No liquid clouds
+        # Zero surface albedo
+        # SZA of 0.0
+        # Effective radius of 85 um
+        # IWC of 0.024 g/m3
+    else:
+        ice_model = 'yang'
+        habit = 'rough-aggregate'
+        r_min = 3.56 # for yang
+        r_eff = ice_data['re'].copy()
+        ice_data_mod['re'] = np.where(np.logical_and(r_eff > 0.0,r_eff < r_min),r_min,r_eff)
+    
+    # Options common to both the solar and thermal calculation
+    xopts['pseudospherical'] = ''
+    xopts['data_files_path'] = lrt_data_path
+    xopts['rte_solver'] = 'disort'
+    xopts['pressure_out'] = 'toa'
+    xopts['number_of_streams'] = '6' # May need to push this to 16
+    
+    solar_wl = '250 2600'
+    thermal_wl = '2500 80000'
+    
+    # Begin setup
+    ic_opts = {'ic_habit': habit}
+    
+    slrt = RadTran(LIBRADTRAN_FOLDER,env=env)
+    slrt.options['sza'] = sza
+    slrt.options['albedo'] = albedo
+    slrt.options['source'] = 'solar'
+    slrt.options['wavelength'] = solar_wl
+    slrt.options['output_user'] = 'p edir edn eup'
+    slrt.options['mol_abs_param'] = spectrum_solar
+    if spectrum_solar in ['fu','kato2']:
+        slrt.options['output_process'] = 'sum'
+    else:
+        slrt.options['output_process'] = 'integrate'
+
+    #if liquid_cloud:
+    #    slrt.cloud = cloud_data 
+
+    for key, val in xopts.items():
+        slrt.options[key] = val
+        
+    # Set up the basic thermal radiation solver
+    tlrt = RadTran(LIBRADTRAN_FOLDER,env=env)
+    tlrt.options['source'] = 'thermal'
+    tlrt.options['albedo'] = 1.0 - emissivity[0]
+    tlrt.options['data_files_path'] = lrt_data_path
+    tlrt.options['output_user'] = 'p edir edn eup'
+    tlrt.options['wavelength'] = thermal_wl
+    tlrt.options['mol_abs_param'] = spectrum_thermal
+    if spectrum_thermal in ['fu','kato2']:
+        tlrt.options['output_process'] = 'sum'
+    else:
+        tlrt.options['output_process'] = 'integrate'
+    for key, val in xopts.items():
+        tlrt.options[key] = val
+
+    #if liquid_cloud:
+    #    tlrt.cloud = cloud_data 
+
+    # Now copy the "non-contrail" versions and add in the contrail ice layer
+    slrt_cld = copy.deepcopy(slrt)
+    slrt_cld.icecloud = ice_data_mod
+    slrt_cld.options['ic_properties'] = ice_model
+    for key, val in ic_opts.items():
+        slrt_cld.options[key] = val
+
+    tlrt_cld = copy.deepcopy(tlrt)
+    tlrt_cld.icecloud = ice_data_mod
+    tlrt_cld.options['ic_properties'] = ice_model
+    for key, val in ic_opts.items():
+        tlrt_cld.options[key] = val
+
+    return slrt, slrt_cld, tlrt, tlrt_cld
+
+def run_LRT_set(lrt_input,max_sza=90.0,run_test=False):
+    lrt_output = {}
+    for tstamp, col_set in lrt_input.items():
+        ncol = len(col_set)
+        lw_vec  = np.zeros(ncol)
+        sw_vec  = np.zeros(ncol)
+        net_vec = np.zeros(ncol)
+        for icol in range(ncol):
+            input_set = col_set[icol]
+            sw_base = input_set['slrt_clear'].run(verbose=False,quiet=True)
+            lw_base = input_set['tlrt_clear'].run(verbose=False,quiet=True)
+            if run_test:
+                print(icol)
+                sw_con  = input_set['slrt_cloudy'].run(verbose=False,quiet=True,print_input=True)
+                lw_con  = input_set['tlrt_cloudy'].run(verbose=False,quiet=True,print_input=True)
+            else:
+                sw_con  = input_set['slrt_cloudy'].run(verbose=False,quiet=True)
+                lw_con  = input_set['tlrt_cloudy'].run(verbose=False,quiet=True)
+            sza = input_set['sza']
+            # Change in NET OUTGOING shortwave and longwave radiation
+            # Positive means cooling!
+            # Outputs:
+            # 0 -> p      Pressure
+            # 1 -> edir   
+            # 2 -> edn    Downwelling flux
+            # 3 -> eup    Upwelling flux
+            # Up - Down = Net outbound TOA flux
+            # Difference between CON and BASE is the change in outbound flux
+            # due to the inclusion of the countrail layer
+            lw_change = (lw_con[3] - lw_con[2]) - (lw_base[3] - lw_base[2])
+            # Results may not be valid at high SZA
+            if sza >= max_sza:
+                sw_change = 0.0
+            else:
+                sw_change = (sw_con[3] - sw_con[2]) - (sw_base[3] - sw_base[2])
+            lw_vec[icol] = lw_change
+            sw_vec[icol] = sw_change
+            net_vec[icol] = lw_change + sw_change
+        lrt_output[tstamp] = {'lw': lw_vec, 'sw': sw_vec, 'net': net_vec}
+    if run_test:
+        raise ValueError('TEST COMPLETE')
+    return lrt_output
