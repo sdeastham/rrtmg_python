@@ -332,6 +332,10 @@ def APCEMM2RRTM_V2( apcemm_data_file,z_flight,
     # Convert to formats needed by RRTM
     emissivity = np.array([emissivity_val])
 
+    #import matplotlib.pyplot as plt
+    #f, ax = plt.subplots()
+    #ax.pcolormesh(icenumber_vol_sum)
+    
     # Loop over columns
     #print( sza, emissivity, albnirdf, albnirdr, albvisdf, albvisdr, tropopause )
     aux_data = []
@@ -379,9 +383,19 @@ def APCEMM2RRTM_V2( apcemm_data_file,z_flight,
                              'iwc': np.array(iwc[first_idx:last_idx]), # g/m3
                              're':  np.array(r_eff[first_idx:last_idx])}
 
+            # Prep the atmosphere description from the meteorological data
+            # Expect Z in km, p in hPa, and T in K
+            # Input should be oriented with positive -> down
+            altitude_mid = 0.5 * (altitude_edges[1:] + altitude_edges[:-1])
+            atmosphere = {'z': np.flip(altitude_edges * 1.0e-3),
+                          'p': np.flip(fn_z_to_p(altitude_edges) * 0.01),
+                          'T': np.flip(np.interp(altitude_edges,altitude_mid,temperature)),
+                          'extrap': False,
+                          'ref': None}
+            #atmosphere = None
             slrt_clear, slrt_cloudy, tlrt_clear, tlrt_cloudy = setup_LRT(
                     ice_data=contrail_data,emissivity=emissivity,albedo=albvisdr,
-                    sza=sza,lrt_data_path=None,env=None)
+                    sza=sza,atmosphere=atmosphere,lrt_data_path=None,env=None)
             aux_data.append({'slrt_clear':  slrt_clear,
                              'slrt_cloudy': slrt_cloudy,
                              'tlrt_clear':  tlrt_clear,
@@ -1069,7 +1083,8 @@ def APCEMM_RF(ts_dir,z_flight,flight_datetime,lat_vec,lon_vec,
               min_icemass=1.0e-5,verbose=False,
               clean_dir=True,use_mca_lw=True,
               use_mca_sw=True,max_sza=90.0,
-              use_single=False,use_libRadtran=False):
+              use_single=False,use_libRadtran=False,
+              dt_base=None):
              
     from run_RRTM import run_directory
     from time import time
@@ -1085,8 +1100,8 @@ def APCEMM_RF(ts_dir,z_flight,flight_datetime,lat_vec,lon_vec,
         dt = timedelta(minutes=10)
     if dt_max is None:
         dt_max = timedelta(hours=24)
-    
-    dt_base = timedelta(hours=0)
+    if dt_base is None:
+        dt_base = timedelta(hours=0)
     dt_curr = dt_base
 
     # Need absolute path to the reference directory, to be safe
@@ -1266,7 +1281,7 @@ def monotonic(x):
     return pos or neg
 
 # libRadtran-based stuff
-def setup_LRT(ice_data,emissivity,albedo,sza,lrt_data_path=None,env=None):
+def setup_LRT(ice_data,emissivity,albedo,sza,atmosphere=None,lrt_data_path=None,env=None):
     if lrt_data_path is None:
         lrt_data_path = '/home/seastham/libRadtran/lrt_2.0.5/share/libRadtran/data'
     if env is None:
@@ -1331,7 +1346,8 @@ def setup_LRT(ice_data,emissivity,albedo,sza,lrt_data_path=None,env=None):
         slrt.options['output_process'] = 'sum'
     else:
         slrt.options['output_process'] = 'integrate'
-
+    slrt.atm_profile = atmosphere
+        
     #if liquid_cloud:
     #    slrt.cloud = cloud_data 
 
@@ -1352,6 +1368,7 @@ def setup_LRT(ice_data,emissivity,albedo,sza,lrt_data_path=None,env=None):
         tlrt.options['output_process'] = 'integrate'
     for key, val in xopts.items():
         tlrt.options[key] = val
+    tlrt.atm_profile = atmosphere
 
     #if liquid_cloud:
     #    tlrt.cloud = cloud_data 
@@ -1380,15 +1397,15 @@ def run_LRT_set(lrt_input,max_sza=90.0,run_test=False):
         net_vec = np.zeros(ncol)
         for icol in range(ncol):
             input_set = col_set[icol]
-            sw_base = input_set['slrt_clear'].run(verbose=False,quiet=True)
-            lw_base = input_set['tlrt_clear'].run(verbose=False,quiet=True)
             if run_test:
                 print(icol)
-                sw_con  = input_set['slrt_cloudy'].run(verbose=False,quiet=True,print_input=True)
-                lw_con  = input_set['tlrt_cloudy'].run(verbose=False,quiet=True,print_input=True)
+                sw_con  = input_set['slrt_cloudy'].run(verbose=False,quiet=False,print_input=True,debug=True)
+                lw_con  = input_set['tlrt_cloudy'].run(verbose=False,quiet=False,print_input=True)
             else:
                 sw_con  = input_set['slrt_cloudy'].run(verbose=False,quiet=True)
                 lw_con  = input_set['tlrt_cloudy'].run(verbose=False,quiet=True)
+            sw_base = input_set['slrt_clear'].run(verbose=False,quiet=True)
+            lw_base = input_set['tlrt_clear'].run(verbose=False,quiet=True)
             sza = input_set['sza']
             # Change in NET OUTGOING shortwave and longwave radiation
             # Positive means cooling!
